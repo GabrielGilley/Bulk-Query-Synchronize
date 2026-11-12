@@ -33,7 +33,7 @@ class PandoMap : public PandoParticipant {
         PandoMap(const ZMQAddress &addr, size_t space_size) : PandoParticipant(addr, false), alloc_(make_shared<Space>(space_size)) {
             map_.reserve(1<<22);
         }
-        PandoMap(const ZMQAddress &addr) : PandoMap(addr, (size_t)(2ull*(1ull<<29)) ) { }
+        PandoMap(const ZMQAddress &addr) : PandoMap(addr, (size_t)(1ull<<34) ) { } // 16 gb
 
         bool does_key_exist(dbkey_t key) {
             auto it = map_.find(key);
@@ -53,6 +53,10 @@ class PandoMap : public PandoParticipant {
 
         void insert(DBEntry<Alloc> entry) {
             map_.insert_or_assign(entry.get_key(), move(entry));
+//             if (map_.size() % 5000000 == 0) {
+//                 cerr << "pando map compacting!!" << endl;
+//                 compact((size_t)(1ull<<34));
+//             }
         }
 
         void recv_map_insert(zmq_socket_t sock, [[maybe_unused]] const char* data, [[maybe_unused]] const char* end) {
@@ -190,7 +194,7 @@ class PandoMap : public PandoParticipant {
         }
 
         void process_msg(msg_type_t type, zmq_socket_t sock, const char *data, const char* end) {
-            if (type == MAP_INSERT) 
+            if (type == MAP_INSERT)
                 recv_map_insert(sock, data, end);
             else if (type == MAP_INSERT_MULTIPLE)
                 recv_map_insert_multiple(sock, data, end);
@@ -243,6 +247,84 @@ class PandoMap : public PandoParticipant {
                 cout << entry << "\n---------" << endl;
             }
         }
-};
 
+        size_t arena_used_bytes() const {
+            return alloc_.used_bytes();
+        }
+
+        size_t arena_capacity_bytes() const {
+            return alloc_.capacity_bytes();
+        }
+
+        void log_memory_stats() const {
+            size_t live_serialized = 0;
+            size_t live_values = 0;
+
+            for (const auto& [key, entry] : map_) {
+                live_serialized += entry.serialize_size();
+                live_values += entry.value().size();
+            }
+
+            cerr << "[PandoMap mem] "
+                 << "entries=" << map_.size()
+                 << " arena_used=" << arena_used_bytes()
+                 << " arena_capacity=" << arena_capacity_bytes()
+                 << " live_serialized=" << live_serialized
+                 << " live_values=" << live_values
+                 << " dead_est_serialized="
+                 << (arena_used_bytes() > live_serialized ? arena_used_bytes() - live_serialized : 0)
+                 << " dead_est_values="
+                 << (arena_used_bytes() > live_values ? arena_used_bytes() - live_values : 0)
+                 << endl;
+        }
+
+        void compact(size_t new_space_size = 0) {
+            size_t live_serialized = 0;
+            for (const auto& [key, entry] : map_) {
+                live_serialized += entry.serialize_size();
+            }
+
+            size_t suggested_size = live_serialized * 2;
+            size_t min_size = 1ull << 20;
+            if (suggested_size < min_size) suggested_size = min_size;
+
+            if (new_space_size == 0 || new_space_size < suggested_size) {
+                new_space_size = suggested_size;
+            }
+
+            cerr << "[PandoMap compact] begin: entries=" << map_.size()
+                 << " old_arena_used=" << alloc_.used_bytes()
+                 << " old_arena_capacity=" << alloc_.capacity_bytes()
+                 << " new_space_size=" << new_space_size
+                 << endl;
+
+            // Save old state so it remains alive while we rebuild.
+            auto old_map = std::move(map_);
+            auto old_alloc = std::move(alloc_);
+
+            // Install the new allocator into *this* first, so rebuilt DBEntry objects
+            // bind their allocator reference to this persistent member.
+            alloc_ = Alloc{make_shared<Space>(new_space_size)};
+
+            map_.clear();
+            map_.reserve(old_map.size());
+
+            for (const auto& [key, entry] : old_map) {
+                DBEntry<Alloc> new_entry{alloc_};
+                new_entry.value().assign(entry.value());
+                new_entry.set_key(entry.get_key());
+                for (const auto& tag : entry.tags()) {
+                    new_entry.add_tag(tag);
+                }
+                map_.insert_or_assign(key, std::move(new_entry));
+            }
+
+            cerr << "[PandoMap compact] end: entries=" << map_.size()
+                 << " new_arena_used=" << alloc_.used_bytes()
+                 << " new_arena_capacity=" << alloc_.capacity_bytes()
+                 << endl;
+        }
+};
 }
+
+

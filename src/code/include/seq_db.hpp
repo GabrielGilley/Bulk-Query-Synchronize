@@ -16,7 +16,7 @@
 #include <boost/lexical_cast/bad_lexical_cast.hpp>
 #include "absl/container/flat_hash_map.h"
 #include "Python.h"
-
+#include <iostream>
 
 #include "pigo.hpp"
 
@@ -48,6 +48,7 @@ namespace pando {
 
 static string MERGE_STRATEGY_FORCE = "MERGE_STRATEGY=FORCE_MERGE";
 static string MERGE_STRATEGY_SUM = "MERGE_STRATEGY=SUM";
+static string MERGE_STRATEGY_KV = "MERGE_STRATEGY=KV";
 
 /** @brief Contains the sequential database
  *
@@ -348,6 +349,37 @@ class SeqDB {
         virtual void add_entry(DBEntry<> entry) {
             add_entry_worker(move(entry));
         }
+         
+        /** @brief when a merge would happen, determine how it should be merged. */
+		DBEntry<> merge_entries_by_strategy(DBEntry<>* e1, DBEntry<>* e2, bool force_merge=false) {
+			bool use_force = force_merge ||
+							 e1->has_tag(MERGE_STRATEGY_FORCE) ||
+							 e2->has_tag(MERGE_STRATEGY_FORCE);
+
+			bool use_kv = e1->has_tag(MERGE_STRATEGY_KV) ||
+						  e2->has_tag(MERGE_STRATEGY_KV);
+
+			bool use_sum = e1->has_tag(MERGE_STRATEGY_SUM) ||
+						   e2->has_tag(MERGE_STRATEGY_SUM);
+
+			bool entries_differ = (*e1 != *e2);
+
+			if (use_kv) {
+				return kv_entries(e1, e2);
+			}
+
+			if (use_sum) {
+				return sum_entries(e1, e2);
+			}
+
+			// if the entries are different, or if either entry has the
+			// "MERGE_STRATEGY=FORCE_MERGE" tag, then concatenate them
+			if (entries_differ || use_force) {
+				return concat_entries(e1, e2, use_force);
+			}
+
+			return *e1;
+		}
 
         void prepare_to_add_entry(DBEntry<>* entry) {
             if (entry->get_key() == INITIAL_KEY) {
@@ -360,25 +392,11 @@ class SeqDB {
             }
             handle_subscriptions(key);
 
-            //If the key already exists, we concatenate the entries' values and tags
+            // If the key already exists, we merge the entries' values and tags
             auto [e, exists] = db_.retrieve_if_exists(entry->get_key());
-            if (exists) {
-
-                // if the entries are different, or if either entry has the
-                // "MERGE_STRATEGY=FORCE_MERGE" tag, then concatenate them
-                bool should_concat = e != *entry;
-                bool force_merge = e.has_tag(MERGE_STRATEGY_FORCE);
-                force_merge |= entry->has_tag(MERGE_STRATEGY_FORCE);
-                should_concat |= force_merge;
-
-                if (e.has_tag(MERGE_STRATEGY_SUM)) {
-                    should_concat = false;
-                    *entry = sum_entries(&e, entry);
-                }
-
-                if (should_concat)
-                    *entry = concat_entries(&e, entry, force_merge);
-            }
+			if (exists) {
+				*entry = merge_entries_by_strategy(&e, entry);
+			}
         }
 
         /** @brief Add a specific DB entry */
@@ -393,6 +411,7 @@ class SeqDB {
             }
             db_.insert_multiple(entries);
         }
+
 
         DBEntry<> sum_entries(DBEntry<>* e1, DBEntry<>* e2) {
             DBEntry<> new_entry;
@@ -419,6 +438,148 @@ class SeqDB {
             }
             return new_entry;
         }
+
+		DBEntry<> kv_entries(DBEntry<>* e1, DBEntry<>* e2) {
+			DBEntry<> new_entry;
+			new_entry.set_key(e1->get_key());
+
+			// Faster tag union: preserves first-seen order rather than sorted order.
+			std::vector<std::string> tag_union;
+			std::unordered_set<std::string> seen_tags;
+
+			auto add_tags = [&](const auto& tags_vec) {
+				for (const auto& tag : tags_vec) {
+					if (seen_tags.insert(tag).second) {
+						tag_union.push_back(tag);
+					}
+				}
+			};
+
+			add_tags(e1->tags());
+			add_tags(e2->tags());
+
+			for (const auto& tag : tag_union) {
+				new_entry.add_tag(tag);
+			}
+
+			const std::string& v1 = e1->value();
+			const std::string& v2 = e2->value();
+
+			auto count_lines = [](std::string_view s) -> size_t {
+				if (s.empty()) {
+					return 0;
+				}
+
+				return 1 + static_cast<size_t>(std::count(s.begin(), s.end(), '\n'));
+			};
+
+			const size_t estimated_lines = count_lines(v1) + count_lines(v2);
+
+			struct KVPair {
+				std::string_view key;
+				std::string value;
+			};
+
+			std::vector<KVPair> kv_pairs;
+			kv_pairs.reserve(estimated_lines);
+
+			std::unordered_map<std::string_view, size_t> key_to_index;
+			key_to_index.reserve(estimated_lines);
+
+			bool kv_failed = false;
+
+			auto add_line = [&](std::string_view line) {
+				if (!line.empty() && line.back() == '\r') {
+					line.remove_suffix(1);
+				}
+
+				if (line.empty()) {
+					return;
+				}
+
+				size_t colon_pos = line.find(':');
+
+				if (colon_pos == std::string_view::npos) {
+					kv_failed = true;
+					return;
+				}
+
+				std::string_view key = line.substr(0, colon_pos);
+				std::string_view value = line.substr(colon_pos + 1);
+
+				if (key.empty()) {
+					kv_failed = true;
+					return;
+				}
+
+				auto existing = key_to_index.find(key);
+
+				if (existing == key_to_index.end()) {
+					size_t index = kv_pairs.size();
+
+					kv_pairs.push_back(KVPair{
+						key,
+						std::string(value)
+					});
+
+					key_to_index.emplace(kv_pairs.back().key, index);
+				} else {
+					std::string& existing_value = kv_pairs[existing->second].value;
+
+					if (!existing_value.empty()) {
+						existing_value.push_back(',');
+					}
+
+					existing_value.append(value.data(), value.size());
+				}
+			};
+
+			auto add_entry = [&](std::string_view entry_value) {
+				size_t pos = 0;
+
+				while (pos < entry_value.size()) {
+					size_t end = entry_value.find('\n', pos);
+
+					if (end == std::string_view::npos) {
+						end = entry_value.size();
+					}
+
+					add_line(entry_value.substr(pos, end - pos));
+
+					if (end == entry_value.size()) {
+						break;
+					}
+
+					pos = end + 1;
+				}
+			};
+
+			add_entry(v1);
+			add_entry(v2);
+
+			std::string merged_value;
+			merged_value.reserve(v1.size() + v2.size() + kv_pairs.size());
+
+			for (size_t i = 0; i < kv_pairs.size(); ++i) {
+				if (i > 0) {
+					merged_value.push_back('\n');
+				}
+
+				merged_value.append(kv_pairs[i].key.data(), kv_pairs[i].key.size());
+				merged_value.push_back(':');
+				merged_value += kv_pairs[i].value;
+			}
+
+			new_entry.value() = std::move(merged_value);
+
+			if (kv_failed) {
+				new_entry.add_tag("MERGED_KV_FAILED");
+			} else {
+				new_entry.add_tag("MERGED_KV");
+			}
+
+			return new_entry;
+		}
 
         DBEntry<> concat_entries(DBEntry<>* e1, DBEntry<>* e2, bool force_merge=false) {
             DBEntry<> new_entry;
@@ -453,30 +614,21 @@ class SeqDB {
             stage_add_entry_worker(move(entry));
         }
 
-        /** @brief Set an entry to be added later in bulk */
-        void stage_add_entry_worker(DBEntry<> entry) {
-            if (entry.get_key() == INITIAL_KEY) {
-                entry.set_key(generate_random_key());
-            }
+		/** @brief Set an entry to be added later in bulk */
+		void stage_add_entry_worker(DBEntry<> entry) {
+			if (entry.get_key() == INITIAL_KEY) {
+				entry.set_key(generate_random_key());
+			}
 
-            //If the key already exists, we concatenate the entries' values and tags
-            auto new_entries_it = new_entries_.find(entry.get_key());
-            if (new_entries_it != new_entries_.end()) {
+			auto new_entries_it = new_entries_.find(entry.get_key());
 
-                // if the entries are different, or if either entry has the
-                // "MERGE_STRATEGY=FORCE_MERGE" tag, then concatenate them
-                bool should_concat = new_entries_it->second != entry;
-                bool force_merge = entry.has_tag(MERGE_STRATEGY_FORCE);
-                force_merge |= new_entries_it->second.has_tag(MERGE_STRATEGY_FORCE);
-                should_concat |= force_merge;
-
-                if (should_concat) {
-                    entry = concat_entries(&(new_entries_it->second), &entry, force_merge);
-                    new_entries_it->second = move(entry);
-                }
-            } else
-                new_entries_.insert({entry.get_key(), move(entry)});
-        }
+			if (new_entries_it != new_entries_.end()) {
+				entry = merge_entries_by_strategy(&(new_entries_it->second), &entry);
+				new_entries_it->second = move(entry);
+			} else {
+				new_entries_.insert({entry.get_key(), move(entry)});
+			}
+		}
 
         virtual void stage_add_tag(dbkey_t key, string tag) {
             stage_add_tag_worker(key, tag);
