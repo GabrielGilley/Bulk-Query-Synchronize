@@ -8,7 +8,7 @@
 
 TEST_NAME="kmer_inv_idx"
 # FILTERS="filters/dagify.txt"
-FILTERS="filters/kmer_index_frag.txt"
+FILTERS="filters/overlap_canonical.txt"
 # DATA_DIR="/cscratch/eth-pre-dag-full/"
 # DATA_DIR="/cscratch/fastq/pando/pando"
 # DATA_DIR="/cscratch/pando-few"
