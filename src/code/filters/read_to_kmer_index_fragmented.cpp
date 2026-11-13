@@ -1,6 +1,7 @@
 #include "helpers.hpp"
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <stdexcept>
 #include <algorithm>
 #include <cstdint>
@@ -227,10 +228,42 @@ void read_kmer_index_frag(const DBAccess *access, const char* filter_fail_tag, c
 
     const char* kmer_index_tags[] = {"index", ""};
 
+    // Only index k-mers whose read count is within the cutoffs: count-1 k-mers
+    // (mostly sequencing errors) cannot link reads, and very frequent ones are
+    // repeats whose posting lists would be costly to merge.
+    //
+    // All counts are checked before anything is written, so a read whose counts
+    // are missing or unreadable (the count phase did not run correctly) fails
+    // without leaving a partial set of postings in the index.
+    unordered_set<uint64_t> kmers_to_index;
+    kmers_to_index.reserve(kmer_fragments.size());
+
+    for (const auto& pair : kmer_fragments)
+    {
+        KmerCountStatus status = check_kmer_count(access, pair.first);
+
+        if (status == KmerCountStatus::MISSING || status == KmerCountStatus::INVALID)
+        {
+            cerr << "[ERROR] unable to run filter: " << FILTER_NAME << " read id '" << read_id << "': "
+                 << (status == KmerCountStatus::MISSING
+                         ? "no count entry for a k-mer (was read_count_canonical_kmers run first, with a BARRIER?)"
+                         : "unreadable count entry for a k-mer (counts not summed?)")
+                 << endl;
+            access->add_tag.run(&access->add_tag, filter_fail_tag);
+            return;
+        }
+
+        if (status == KmerCountStatus::IN_RANGE)
+            kmers_to_index.insert(pair.first);
+    }
+
     for (auto& pair : kmer_fragments)
     {
         uint64_t encoded_kmer = pair.first;
         vector<uint32_t>& occurrences = pair.second;
+
+        if (kmers_to_index.count(encoded_kmer) == 0)
+            continue;
 
         // Group by fragment, then strand (a k-mer can occur on both strands of one fragment).
         sort(occurrences.begin(), occurrences.end());
