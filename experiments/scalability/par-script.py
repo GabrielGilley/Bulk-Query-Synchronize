@@ -55,20 +55,34 @@ def wait_for_stable_db(client):
 
 
 def process(client, filters: list):
-    barrier = False
+    """Install filters in order, processing to completion at each BARRIER.
+
+    Any number of BARRIERs is supported. Filters before a BARRIER finish
+    processing before any filter after it is installed. Filters installed in
+    earlier phases stay installed. A BARRIER with no new filters since the
+    previous one (leading or repeated BARRIERs) is skipped, and blank lines
+    are ignored.
+    """
+    pending = False  # filters installed since the last processing pass
+    phase = 0
     for f in filters:
+        if not f:
+            continue
         if f != "BARRIER":
-            barrier = False
             print("\t\tInstalling Filter:", f)
             client.install_filter(f)
             time.sleep(3)
-        else:
-            barrier = True
-            print("Reached barrier. Begining processing.")
+            pending = True
+        elif pending:
+            phase += 1
+            print(f"Reached barrier {phase}. Beginning processing.")
             pando.process_blocking(client)
             time.sleep(1)
-            print("End barrier.")
-    if not barrier: 
+            print(f"End barrier {phase}.")
+            pending = False
+        else:
+            print("Skipping BARRIER: no new filters since the last one.")
+    if pending:
         print("Final process loop")
         pando.process_blocking(client)
         time.sleep(1)
