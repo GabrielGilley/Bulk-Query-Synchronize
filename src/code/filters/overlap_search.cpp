@@ -98,10 +98,12 @@ void overlap_search(const DBAccess *access, const char* filter_fail_tag, const c
 
     const uint64_t total_query_kmers = static_cast<uint64_t>(seq.length() - K + 1);
 
-    vector<uint64_t> query_kmers;
+    // Canonical k-mers, so the index finds reads from either strand.
+    vector<uint64_t> codes;
+    vector<uint8_t> strands;
     size_t bad_pos = 0;
 
-    if (!encode_kmers_rolling(seq, K, query_kmers, bad_pos))
+    if (!encode_canonical_kmers_rolling(seq, K, codes, strands, bad_pos))
     {
         cerr << "Invalid nucleotide '" << seq[bad_pos] << "' at position " << bad_pos
              << " in query read id: '" << query_read_id_str << "'" << endl;
@@ -109,12 +111,20 @@ void overlap_search(const DBAccess *access, const char* filter_fail_tag, const c
         return;
     }
 
+    // Sort (code << 1 | strand) so each canonical k-mer's occurrences are grouped.
+    vector<pair<uint64_t, uint8_t>> query_kmers;
+    query_kmers.reserve(codes.size());
+    for (size_t i = 0; i < codes.size(); ++i)
+        query_kmers.push_back({codes[i], strands[i]});
+
     sort(query_kmers.begin(), query_kmers.end());
 
+    // One lookup per distinct canonical k-mer; multiplicity is kept per strand
+    // because a k-mer can occur in the query in both orientations.
     struct QueryKmer
     {
         uint64_t encoded_kmer;
-        uint64_t multiplicity;
+        uint64_t multiplicity[2];  // [0] = canonical form in the query, [1] = reverse complement
     };
 
     vector<QueryKmer> unique_query_kmers;
@@ -122,27 +132,30 @@ void overlap_search(const DBAccess *access, const char* filter_fail_tag, const c
 
     for (size_t i = 0; i < query_kmers.size();)
     {
-        uint64_t encoded_kmer = query_kmers[i];
-        uint64_t multiplicity = 1;
-        ++i;
+        QueryKmer q {query_kmers[i].first, {0, 0}};
 
-        while (i < query_kmers.size() && query_kmers[i] == encoded_kmer)
+        while (i < query_kmers.size() && query_kmers[i].first == q.encoded_kmer)
         {
-            ++multiplicity;
+            ++q.multiplicity[query_kmers[i].second];
             ++i;
         }
 
-        unique_query_kmers.push_back({encoded_kmer, multiplicity});
+        unique_query_kmers.push_back(q);
     }
 
+    // Votes per (target read, target fragment, relative strand). Relative strand
+    // is query strand XOR target strand: 0 = same orientation, 1 = opposite.
+    // The two orientations are counted separately so a mix of unrelated
+    // same- and opposite-strand hits cannot add up to a false overlap.
     unordered_map<uint64_t, uint64_t> read_fragment_counts;
     read_fragment_counts.reserve(unique_query_kmers.size() * 16);
 
     uint32_t best_read_id = 0;
     uint32_t best_fragment = 0;
+    uint32_t best_rel_strand = 0;
     uint64_t best_count = 0;
 
-    auto process_index_value = [&](const char* s, size_t n, uint64_t query_multiplicity) -> bool
+    auto process_index_value = [&](const char* s, size_t n, const uint64_t* query_multiplicity) -> bool
     {
         size_t p = 0;
         uint64_t parsed_read_id = 0;
@@ -206,7 +219,7 @@ void overlap_search(const DBAccess *access, const char* filter_fail_tag, const c
             uint64_t parsed_fragment = 0;
             bool saw_fragment_digit = false;
 
-            while (p < n && s[p] != ',' && s[p] != '*')
+            while (p < n && s[p] != ',' && s[p] != '*' && s[p] != '+' && s[p] != '-')
             {
                 unsigned char c = static_cast<unsigned char>(s[p]);
 
@@ -245,6 +258,18 @@ void overlap_search(const DBAccess *access, const char* filter_fail_tag, const c
                 cerr << "'" << endl;
                 return false;
             }
+
+            // Strand of the k-mer in the target read: '+' canonical, '-' reverse complement
+            if (p >= n || (s[p] != '+' && s[p] != '-'))
+            {
+                cerr << "Invalid index value (missing strand after fragment): '";
+                cerr.write(s, n);
+                cerr << "'" << endl;
+                return false;
+            }
+
+            uint32_t target_strand = (s[p] == '-') ? 1 : 0;
+            ++p;
 
             uint64_t index_count = 1;
 
@@ -298,18 +323,38 @@ void overlap_search(const DBAccess *access, const char* filter_fail_tag, const c
 
             uint32_t fragment = static_cast<uint32_t>(parsed_fragment);
 
-            uint64_t read_fragment_key =
-                (static_cast<uint64_t>(hit_read_id) << 32) |
-                static_cast<uint64_t>(fragment);
-
-            uint64_t count =
-                (read_fragment_counts[read_fragment_key] += query_multiplicity * index_count);
-
-            if (count > best_count)
+            if (fragment > (numeric_limits<uint32_t>::max() >> 1))
             {
-                best_count = count;
-                best_read_id = hit_read_id;
-                best_fragment = fragment;
+                cerr << "Invalid index value (fragment too large): '";
+                cerr.write(s, n);
+                cerr << "'" << endl;
+                return false;
+            }
+
+            // A query occurrence on strand qs and a target occurrence on strand
+            // target_strand vote for relative strand qs ^ target_strand.
+            for (uint32_t qs = 0; qs < 2; ++qs)
+            {
+                if (query_multiplicity[qs] == 0)
+                    continue;
+
+                uint32_t rel_strand = qs ^ target_strand;
+
+                uint64_t read_fragment_key =
+                    (static_cast<uint64_t>(hit_read_id) << 32) |
+                    (static_cast<uint64_t>(fragment) << 1) |
+                    static_cast<uint64_t>(rel_strand);
+
+                uint64_t count =
+                    (read_fragment_counts[read_fragment_key] += query_multiplicity[qs] * index_count);
+
+                if (count > best_count)
+                {
+                    best_count = count;
+                    best_read_id = hit_read_id;
+                    best_fragment = fragment;
+                    best_rel_strand = rel_strand;
+                }
             }
 
             if (p < n && s[p] == ',')
@@ -386,11 +431,14 @@ void overlap_search(const DBAccess *access, const char* filter_fail_tag, const c
         static_cast<uint64_t>(best_fragment) *
         static_cast<uint64_t>(FRAG - OVERLAP);
 
+    // query,target,target_position,presence,relative_strand
+    //   relative_strand: '+' same orientation, '-' target is the reverse complement
     string candidate_value =
         query_read_id_str + "," +
         to_string(best_read_id) + "," +
         to_string(position) + "," +
-        to_string(presence);
+        to_string(presence) + "," +
+        (best_rel_strand ? "-" : "+");
 
     const char* candidate_tags[] = {"candidate", ""};
 

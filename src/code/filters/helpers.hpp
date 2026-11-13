@@ -195,6 +195,59 @@ inline bool encode_kmers_rolling(const string& seq, size_t k, vector<uint64_t>& 
     return true;
 }
 
+/** @brief Canonical 2-bit encoding of every k-mer of seq, with strand (k <= 32)
+ *
+ * For each position i, the k-mer seq[i, i+k) and its reverse complement are
+ * both tracked with a rolling update, and codes[i] is the smaller of the two.
+ * Because A < C < G < T in the 2-bit encoding, that is the alphabetically
+ * smaller sequence, so a read and the opposite strand of the same region give
+ * the same codes.
+ *
+ * strands[i] is 0 if the k-mer appears in seq as its canonical form and 1 if
+ * seq holds its reverse complement. For odd k a k-mer never equals its own
+ * reverse complement, so the strand is always well defined; for even k such
+ * k-mers get strand 0.
+ *
+ * Returns false on the first invalid nucleotide and sets bad_pos to its index;
+ * codes and strands are left incomplete in that case.
+ */
+inline bool encode_canonical_kmers_rolling(const string& seq, size_t k, vector<uint64_t>& codes,
+                                           vector<uint8_t>& strands, size_t& bad_pos)
+{
+    codes.clear();
+    strands.clear();
+    if (k == 0 || k > 32 || seq.length() < k)
+        return true;
+
+    const uint64_t mask = (k == 32) ? ~0ull : ((1ull << (2 * k)) - 1);
+    const unsigned top_shift = static_cast<unsigned>(2 * (k - 1));
+    codes.reserve(seq.length() - k + 1);
+    strands.reserve(seq.length() - k + 1);
+
+    uint64_t fwd = 0;
+    uint64_t rc = 0;
+    for (size_t i = 0; i < seq.length(); ++i)
+    {
+        int bp = nucleotide_to_bits(seq[i]);
+        if (bp == -1)
+        {
+            bad_pos = i;
+            return false;
+        }
+        // Forward: the new base enters at the low end.
+        fwd = ((fwd << 2) | static_cast<uint64_t>(bp)) & mask;
+        // Reverse complement: the complement (3 - bp) enters at the high end.
+        rc = (rc >> 2) | (static_cast<uint64_t>(3 - bp) << top_shift);
+        if (i + 1 >= k)
+        {
+            bool reverse = rc < fwd;
+            codes.push_back(reverse ? rc : fwd);
+            strands.push_back(reverse ? 1 : 0);
+        }
+    }
+    return true;
+}
+
 
 std::pair<uint16_t, uint16_t> roaring_key_value(uint32_t x)
 {

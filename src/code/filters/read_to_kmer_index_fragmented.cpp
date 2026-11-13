@@ -195,10 +195,13 @@ void read_kmer_index_frag(const DBAccess *access, const char* filter_fail_tag, c
 
     const size_t frag_step = FRAG - OVERLAP;
 
-    // Encode every k-mer of the read once; fragments overlap, so they share these.
+    // Encode every k-mer of the read once, canonically (the smaller of the k-mer
+    // and its reverse complement) so reads from opposite strands share keys.
+    // Fragments overlap, so they share these codes.
     vector<uint64_t> encoded;
+    vector<uint8_t> strands;
     size_t bad_pos = 0;
-    if (!encode_kmers_rolling(seq, K, encoded, bad_pos))
+    if (!encode_canonical_kmers_rolling(seq, K, encoded, strands, bad_pos))
     {
         cerr << "Invalid nucleotide '" << seq[bad_pos] << "' at position " << bad_pos
              << " in read id: '" << read_id << "'" << endl;
@@ -206,6 +209,7 @@ void read_kmer_index_frag(const DBAccess *access, const char* filter_fail_tag, c
         return;
     }
 
+    // Per canonical k-mer: one (fragment << 1 | strand) value per occurrence.
     unordered_map<uint64_t, vector<uint32_t>> kmer_fragments;
 
     uint32_t fragment_number = 0;
@@ -218,29 +222,35 @@ void read_kmer_index_frag(const DBAccess *access, const char* filter_fail_tag, c
             continue;
 
         for (size_t i = frag_start; i + K <= frag_end; ++i)
-            kmer_fragments[encoded[i]].push_back(fragment_number);
+            kmer_fragments[encoded[i]].push_back((fragment_number << 1) | strands[i]);
     }
 
     const char* kmer_index_tags[] = {"index", ""};
 
-    for (const auto& pair : kmer_fragments)
+    for (auto& pair : kmer_fragments)
     {
         uint64_t encoded_kmer = pair.first;
-        const vector<uint32_t>& fragments = pair.second;
+        vector<uint32_t>& occurrences = pair.second;
+
+        // Group by fragment, then strand (a k-mer can occur on both strands of one fragment).
+        sort(occurrences.begin(), occurrences.end());
 
         dbkey_t new_key = make_kmer_inv_index_key(encoded_kmer);
 
+        // Posting format: read_id:frag<+|->[*count],...
+        //   + : this read contains the canonical k-mer
+        //   - : this read contains its reverse complement
 		string new_value = read_id + ":";
 
 		bool first_fragment = true;
 
-		for (size_t j = 0; j < fragments.size();)
+		for (size_t j = 0; j < occurrences.size();)
 		{
-			uint32_t fragment = fragments[j];
+			uint32_t occurrence = occurrences[j];
 			uint64_t count = 1;
 			++j;
 
-			while (j < fragments.size() && fragments[j] == fragment)
+			while (j < occurrences.size() && occurrences[j] == occurrence)
 			{
 				++count;
 				++j;
@@ -251,7 +261,8 @@ void read_kmer_index_frag(const DBAccess *access, const char* filter_fail_tag, c
 
 			first_fragment = false;
 
-			new_value += to_string(fragment);
+			new_value += to_string(occurrence >> 1);
+			new_value += (occurrence & 1) ? '-' : '+';
 
 			if (count > 1)
 			{
