@@ -6,8 +6,6 @@
 #include <cstdint>
 #include <limits>
 #include <cctype>
-#include <chrono>
-#include <thread>
 
 using namespace std;
 using namespace pando;
@@ -101,37 +99,14 @@ void overlap_search(const DBAccess *access, const char* filter_fail_tag, const c
     const uint64_t total_query_kmers = static_cast<uint64_t>(seq.length() - K + 1);
 
     vector<uint64_t> query_kmers;
-    query_kmers.reserve(total_query_kmers);
+    size_t bad_pos = 0;
 
-    string kmer;
-    kmer.reserve(K);
-
-    for (size_t i = 0; i + K <= seq.length(); ++i)
+    if (!encode_kmers_rolling(seq, K, query_kmers, bad_pos))
     {
-        kmer.assign(seq, i, K);
-
-        long long b_key;
-
-        try
-        {
-            b_key = sequence_to_bits(kmer);
-        }
-        catch (const runtime_error& e)
-        {
-            cerr << "Error with " << e.what() << endl;
-            cerr << "Attempting to do kmer: '" << kmer << "'" << endl;
-            access->add_tag.run(&access->add_tag, filter_fail_tag);
-            return;
-        }
-
-        if (b_key == -1)
-        {
-            cerr << "Invalid nucleotide in kmer: '" << kmer << "'" << endl;
-            access->add_tag.run(&access->add_tag, filter_fail_tag);
-            return;
-        }
-
-        query_kmers.push_back(static_cast<uint64_t>(b_key));
+        cerr << "Invalid nucleotide '" << seq[bad_pos] << "' at position " << bad_pos
+             << " in query read id: '" << query_read_id_str << "'" << endl;
+        access->add_tag.run(&access->add_tag, filter_fail_tag);
+        return;
     }
 
     sort(query_kmers.begin(), query_kmers.end());
@@ -346,7 +321,6 @@ void overlap_search(const DBAccess *access, const char* filter_fail_tag, const c
 
     for (const QueryKmer& query_kmer : unique_query_kmers)
     {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
         dbkey_t kmer_key = make_kmer_index_key(query_kmer.encoded_kmer);
 
         char* kmer_ret = nullptr;
