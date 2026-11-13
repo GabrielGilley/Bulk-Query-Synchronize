@@ -24,7 +24,7 @@ void seq_count_kmers(const DBAccess *access, const char* filter_fail_tag, const 
     // Create new DB entries for each transaction
     string val = string(access->value);
     val.erase(std::remove_if(val.begin(), val.end(), [](unsigned char c) { return std::isspace(c); }), val.end());
-    const char* new_tags[] = {"kmer_count", "k=15", "MERGE_STRATEGY_SUM", ""};
+    const char* new_tags[] = {"kmer_count", "k=15", "MERGE_STRATEGY=SUM", ""};
     if (val.empty())
     {
         access->add_tag.run(&access->add_tag, filter_fail_tag);

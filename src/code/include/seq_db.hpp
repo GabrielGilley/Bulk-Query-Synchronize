@@ -371,7 +371,7 @@ class SeqDB {
                 force_merge |= entry->has_tag(MERGE_STRATEGY_FORCE);
                 should_concat |= force_merge;
 
-                if (e.has_tag(MERGE_STRATEGY_SUM)) {
+                if (e.has_tag(MERGE_STRATEGY_SUM) || entry->has_tag(MERGE_STRATEGY_SUM)) {
                     should_concat = false;
                     *entry = sum_entries(&e, entry);
                 }
@@ -470,7 +470,13 @@ class SeqDB {
                 force_merge |= new_entries_it->second.has_tag(MERGE_STRATEGY_FORCE);
                 should_concat |= force_merge;
 
-                if (should_concat) {
+                // Sum numeric values, as add_entry does. Without this, two
+                // identical staged entries (e.g. two counts of "1") compare
+                // equal and the second is dropped, and differing ones are
+                // concatenated instead of added.
+                if (new_entries_it->second.has_tag(MERGE_STRATEGY_SUM) || entry.has_tag(MERGE_STRATEGY_SUM)) {
+                    new_entries_it->second = sum_entries(&(new_entries_it->second), &entry);
+                } else if (should_concat) {
                     entry = concat_entries(&(new_entries_it->second), &entry, force_merge);
                     new_entries_it->second = move(entry);
                 }
