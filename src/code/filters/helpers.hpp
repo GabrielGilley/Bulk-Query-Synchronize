@@ -143,6 +143,40 @@ long long sequence_to_bits(const string & sequence)
     return bit_representation;
 }
 
+/** @brief 2-bit encode every k-mer of seq with a rolling update (k <= 32)
+ *
+ * out[i] holds the same value as sequence_to_bits(seq.substr(i, k)), but each
+ * k-mer is derived from the previous one by shifting in one base, so the whole
+ * sequence is read once instead of k times.
+ *
+ * Returns false on the first invalid nucleotide and sets bad_pos to its index;
+ * out is left incomplete in that case.
+ */
+inline bool encode_kmers_rolling(const string& seq, size_t k, vector<uint64_t>& out, size_t& bad_pos)
+{
+    out.clear();
+    if (k == 0 || k > 32 || seq.length() < k)
+        return true;
+
+    const uint64_t mask = (k == 32) ? ~0ull : ((1ull << (2 * k)) - 1);
+    out.reserve(seq.length() - k + 1);
+
+    uint64_t code = 0;
+    for (size_t i = 0; i < seq.length(); ++i)
+    {
+        int bp = nucleotide_to_bits(seq[i]);
+        if (bp == -1)
+        {
+            bad_pos = i;
+            return false;
+        }
+        code = ((code << 2) | static_cast<uint64_t>(bp)) & mask;
+        if (i + 1 >= k)
+            out.push_back(code);
+    }
+    return true;
+}
+
 
 std::pair<uint16_t, uint16_t> roaring_key_value(uint32_t x)
 {

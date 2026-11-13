@@ -195,6 +195,17 @@ void read_kmer_index_frag(const DBAccess *access, const char* filter_fail_tag, c
 
     const size_t frag_step = FRAG - OVERLAP;
 
+    // Encode every k-mer of the read once; fragments overlap, so they share these.
+    vector<uint64_t> encoded;
+    size_t bad_pos = 0;
+    if (!encode_kmers_rolling(seq, K, encoded, bad_pos))
+    {
+        cerr << "Invalid nucleotide '" << seq[bad_pos] << "' at position " << bad_pos
+             << " in read id: '" << read_id << "'" << endl;
+        access->add_tag.run(&access->add_tag, filter_fail_tag);
+        return;
+    }
+
     unordered_map<uint64_t, vector<uint32_t>> kmer_fragments;
 
     uint32_t fragment_number = 0;
@@ -207,32 +218,7 @@ void read_kmer_index_frag(const DBAccess *access, const char* filter_fail_tag, c
             continue;
 
         for (size_t i = frag_start; i + K <= frag_end; ++i)
-        {
-            string kmer = seq.substr(i, K);
-            long long b_key;
-
-            try
-            {
-                b_key = sequence_to_bits(kmer);
-            }
-            catch (const runtime_error& e)
-            {
-                cerr << "Error with " << e.what() << endl;
-                cerr << "Attempting to do kmer: '" << kmer << "'" << endl;
-                access->add_tag.run(&access->add_tag, filter_fail_tag);
-                return;
-            }
-
-            if (b_key == -1)
-            {
-                cerr << "Invalid nucleotide in kmer: '" << kmer << "'" << endl;
-                access->add_tag.run(&access->add_tag, filter_fail_tag);
-                return;
-            }
-
-            uint64_t encoded_kmer = static_cast<uint64_t>(b_key);
-            kmer_fragments[encoded_kmer].push_back(fragment_number);
-        }
+            kmer_fragments[encoded[i]].push_back(fragment_number);
     }
 
     const char* kmer_index_tags[] = {"index", ""};
