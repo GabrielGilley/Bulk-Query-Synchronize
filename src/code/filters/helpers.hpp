@@ -140,6 +140,48 @@ inline uint64_t kmer_from_key(const dbkey_t& key)
 }
 
 inline dbkey_t make_kmer_count_key(uint64_t encoded_kmer) { return make_kmer_key(KMER_COUNT, encoded_kmer); }
+
+/* Count cutoffs for indexing canonical 31-mers (count = number of reads that
+ * contain the k-mer, from read_count_canonical_kmers).
+ *
+ * Model: for a k-mer occurring once in the genome, the count is ~ Poisson(d*p),
+ * with d = coverage and p = (1 - e)^k the chance a read carries it error-free.
+ *   MIN: a k-mer in only one read cannot link two reads, and nearly all such
+ *        k-mers contain sequencing errors.
+ *   MAX: smallest u with P(count >= u) <= 1e-3. Above it the k-mer almost
+ *        certainly occurs more than once in the genome (repeat).
+ * Current values assume d = 30, e = 0.01, k = 31 (mean count 22.0); recompute
+ * for other datasets. */
+#define KMER_COUNT_MIN 2
+#define KMER_COUNT_MAX 39
+
+enum class KmerCountStatus { IN_RANGE, OUT_OF_RANGE, MISSING, INVALID };
+
+/** @brief Look up a canonical k-mer's count and check it against the cutoffs
+ *
+ * MISSING means no count entry exists (the count phase did not run or did not
+ * cover this read); INVALID means the stored value is not a single number
+ * (e.g. counts were concatenated instead of summed).
+ */
+inline KmerCountStatus check_kmer_count(const DBAccess* access, uint64_t encoded_kmer,
+                                        double min_count = KMER_COUNT_MIN, double max_count = KMER_COUNT_MAX)
+{
+    char* value = nullptr;
+    access->get_entry_by_key.run(&access->get_entry_by_key, make_kmer_count_key(encoded_kmer), &value);
+
+    if (value == nullptr)
+        return KmerCountStatus::MISSING;
+
+    char* end = nullptr;
+    double count = strtod(value, &end);
+    bool valid = end != value && *end == '\0';
+    free(value);
+
+    if (!valid)
+        return KmerCountStatus::INVALID;
+
+    return (count >= min_count && count <= max_count) ? KmerCountStatus::IN_RANGE : KmerCountStatus::OUT_OF_RANGE;
+}
 inline dbkey_t make_kmer_inv_index_key(uint64_t encoded_kmer) { return make_kmer_key(KMER_INV_INDEX, encoded_kmer); }
 
 dbkey_t make_32bit_table_key(uint32_t table_id, uint32_t key) {
