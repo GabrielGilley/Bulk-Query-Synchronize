@@ -34,7 +34,7 @@ void read_count_kmers(const DBAccess *access, const char* filter_fail_tag, const
     }
     val = lines[1]; // Set to sequence
     val.erase(std::remove_if(val.begin(), val.end(), [](unsigned char c) { return std::isspace(c); }), val.end());
-    const char* new_tags[] = {"kmer_index", "k=15", ""};
+    const char* new_tags[] = {"kmer_count", "k=15", "MERGE_STRATEGY=SUM", ""};
     if (val.empty())
     {
         access->add_tag.run(&access->add_tag, filter_fail_tag);
