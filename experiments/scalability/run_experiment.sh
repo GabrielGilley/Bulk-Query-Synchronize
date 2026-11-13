@@ -59,7 +59,7 @@ echo "MESH: $MESH"
 echo "Beginning Experiment..."
 echo "Params: $TEST_NAME $MESH $FILTERS $DATA_DIR $RESULTS_DIR"
 # singularity run -B /cscratch -B /scratch ./../../src/sifs/pando_python.sif python3 dagify-script.py -n $TEST_NAME -m $MESH -f $FILTERS -d $DATA_DIR -r $RESULTS_DIR
-singularity run -B /cscratch -B /scratch ./../../src/sifs/pando_python.sif python3 eth-tx-val.py -n $TEST_NAME -m $MESH -f $FILTERS -d $DATA_DIR -r $RESULTS_DIR
+singularity run -B /cscratch -B /scratch ./../../src/sifs/pando_python.sif python3 par-script.py -n $TEST_NAME -m $MESH -f $FILTERS -d $DATA_DIR -r $RESULTS_DIR
 
 echo "Experiment Complete"
 echo "Canceling Job $JOB_ID"
