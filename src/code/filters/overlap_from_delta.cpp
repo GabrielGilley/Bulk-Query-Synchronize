@@ -87,7 +87,7 @@ void overlap_from_delta(const DBAccess *access, const char* filter_fail_tag, con
             return;
         }
 
-        dbkey_t kmer_key = make_kmer_index_key(encoded_kmer);
+        dbkey_t kmer_key = make_kmer_inv_index_key(encoded_kmer);
         char* bucket_ret = nullptr;
         access->get_entry_by_key.run(&access->get_entry_by_key, kmer_key, &bucket_ret);
 

@@ -107,22 +107,40 @@ int nucleotide_to_bits(char nucleotide)
     }
 }
 
-#define KMER_INDEX_NAMESPACE ((uint32_t)(KMER_INDEX << 28))
-#define KMER_INDEX_A_MASK ((uint32_t)((KMER_INDEX << 28) - 1))
+/* K-mer key layout (see KMER_COUNT / KMER_INV_INDEX in dbkey.h):
+ *   a = table constant
+ *   b = low 31 bits of the 2-bit encoded k-mer
+ *   c = high 31 bits
+ * A 31-mer is 62 bits, so it fills both halves; both fit as non-negative vtx_t.
+ * b holds the low bits because node placement hashes only (a, b): with the high
+ * bits in b, any k <= 15 would put b = 0 for every k-mer and send them all to one node. */
 #define LOW_16_BITS_MASK ((uint32_t)((1u << 16) - 1))
 #define LOW_32_BITS_MASK ((uint64_t)((1ull << 32) - 1))
 
-dbkey_t make_kmer_index_key(uint64_t encoded_kmer)
+#define KMER_HALF_BITS 31
+#define KMER_HALF_MASK ((uint64_t)((1ull << KMER_HALF_BITS) - 1))
+#define KMER_MAX_BITS (2 * KMER_HALF_BITS)
+
+inline dbkey_t make_kmer_key(uint32_t table, uint64_t encoded_kmer)
 {
-    uint32_t high30 = static_cast<uint32_t>((encoded_kmer >> 32) & KMER_INDEX_A_MASK);
-    uint32_t low32 = static_cast<uint32_t>(encoded_kmer & LOW_32_BITS_MASK);
+    if (encoded_kmer >> KMER_MAX_BITS)
+        throw runtime_error("encoded k-mer exceeds 62 bits (k > 31)");
 
     return {
-        static_cast<uint32_t>(KMER_INDEX_NAMESPACE | high30),
-        static_cast<uint16_t>((low32 >> 16) & LOW_16_BITS_MASK),
-        static_cast<uint16_t>(low32 & LOW_16_BITS_MASK)
+        static_cast<chain_info_t>(table),
+        static_cast<vtx_t>(encoded_kmer & KMER_HALF_MASK),
+        static_cast<vtx_t>((encoded_kmer >> KMER_HALF_BITS) & KMER_HALF_MASK)
     };
 }
+
+/** @brief Recover the encoded k-mer from a key made by make_kmer_key */
+inline uint64_t kmer_from_key(const dbkey_t& key)
+{
+    return (static_cast<uint64_t>(key.c) << KMER_HALF_BITS) | static_cast<uint64_t>(key.b);
+}
+
+inline dbkey_t make_kmer_count_key(uint64_t encoded_kmer) { return make_kmer_key(KMER_COUNT, encoded_kmer); }
+inline dbkey_t make_kmer_inv_index_key(uint64_t encoded_kmer) { return make_kmer_key(KMER_INV_INDEX, encoded_kmer); }
 
 dbkey_t make_32bit_table_key(uint32_t table_id, uint32_t key) {
     return {table_id, static_cast<uint16_t>((key >> 16) & 0xFFFFu), static_cast<uint16_t>(key & 0xFFFFu)};

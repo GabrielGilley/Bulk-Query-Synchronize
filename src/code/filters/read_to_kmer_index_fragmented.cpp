@@ -228,7 +228,7 @@ void read_kmer_index_frag(const DBAccess *access, const char* filter_fail_tag, c
         uint64_t encoded_kmer = pair.first;
         const vector<uint32_t>& fragments = pair.second;
 
-        dbkey_t new_key = make_kmer_index_key(encoded_kmer);
+        dbkey_t new_key = make_kmer_inv_index_key(encoded_kmer);
 
 		string new_value = read_id + ":";
 
@@ -280,7 +280,7 @@ void read_kmer_index_frag(const DBAccess *access, const char* filter_fail_tag, c
 //         uint64_t encoded_kmer = pair.first;
 //         const vector<uint32_t>& fragments = pair.second;
 
-//         dbkey_t new_key = make_kmer_index_key(encoded_kmer);
+//         dbkey_t new_key = make_kmer_inv_index_key(encoded_kmer);
 
 //         string new_value = read_id + ":";
 
