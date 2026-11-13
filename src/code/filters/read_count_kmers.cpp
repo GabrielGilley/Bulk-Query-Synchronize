@@ -75,7 +75,7 @@ void read_count_kmers(const DBAccess *access, const char* filter_fail_tag, const
             access->add_tag.run(&access->add_tag, filter_fail_tag);
             return;
         }
-        new_key = {KMER_COUNTS, b_key, 0};
+        new_key = make_kmer_count_key(static_cast<uint64_t>(b_key));
         new_value = to_string(pair.second);
         access->make_new_entry.run(&access->make_new_entry, new_tags, new_value.c_str(), new_key);
     }

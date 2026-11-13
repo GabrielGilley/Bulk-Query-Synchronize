@@ -166,7 +166,7 @@ void read_kmer_index(const DBAccess *access, const char* filter_fail_tag, const 
         uint64_t encoded_kmer = item.encoded_kmer;
         const vector<int>& positions = *(item.positions);
 
-        dbkey_t new_key = make_kmer_index_key(encoded_kmer);
+        dbkey_t new_key = make_kmer_inv_index_key(encoded_kmer);
 
         string new_value = read_id + ":";
         for (size_t j = 0; j < positions.size(); ++j)

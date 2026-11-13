@@ -321,7 +321,7 @@ void overlap_search(const DBAccess *access, const char* filter_fail_tag, const c
 
     for (const QueryKmer& query_kmer : unique_query_kmers)
     {
-        dbkey_t kmer_key = make_kmer_index_key(query_kmer.encoded_kmer);
+        dbkey_t kmer_key = make_kmer_inv_index_key(query_kmer.encoded_kmer);
 
         char* kmer_ret = nullptr;
         access->get_entry_by_key.run(&access->get_entry_by_key, kmer_key, &kmer_ret);

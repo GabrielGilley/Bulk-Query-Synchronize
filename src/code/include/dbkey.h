@@ -79,8 +79,13 @@ inline bool is_random_key(dbkey_t k) {
 #define SHORT (uint32_t)1
 #define SEQ (uint32_t)0
 #define QUAL (uint32_t)2
-#define KMER_COUNTS (uint32_t)3
-#define KMER_INDEX (uint32_t)4
+/* K-mer tables: key.a is the table constant, and the 2-bit encoded k-mer
+ * (k <= 31, so at most 62 bits) is split 31/31 across key.b and key.c:
+ *   b = low 31 bits, c = high 31 bits
+ * Node placement hashes only (a, b), so b must hold the bits that always vary.
+ * See KMER_HALF_BITS and make_kmer_key() in filters/helpers.hpp. */
+#define KMER_COUNT (uint32_t)3
+#define KMER_INV_INDEX (uint32_t)4
 #define READ_KMER_DELTA (uint32_t)5 
 #define OVERLAP_CANDIDATES (uint32_t)6
 
