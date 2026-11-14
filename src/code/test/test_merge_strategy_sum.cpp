@@ -14,7 +14,10 @@ using namespace pando;
 
 static DBEntry<> count_entry(dbkey_t key, const string& value) {
     DBEntry<> e;
-    e.add_tag("kmer_count").add_tag("MERGE_STRATEGY=SUM").add_to_value(value);
+    e.add_tag("count").add_tag("MERGE_STRATEGY=SUM");
+    // Set the value exactly, as make_new_entry does: add_to_value() appends a
+    // '\n', which sum_entries cannot parse, so it would fall back to concatenating.
+    e.value() = value;
     e.set_key(key);
     return e;
 }

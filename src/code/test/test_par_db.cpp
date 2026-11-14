@@ -1083,7 +1083,10 @@ TEST(import_txt_db) {
     c1.import_db(data_dir);
     this_thread::sleep_for(chrono::milliseconds(100));
 
-    EQ(c1.db_size() + c2.db_size(), 11);
+    // Every entry in the top-level files of test/data:
+    // simple_bitcoin (2) + simple_bnb (2) + simple_ethereum (2) + simple_omni (5)
+    // + simple_fastq (1, BQS-only). Update this when files are added there.
+    EQ(c1.db_size() + c2.db_size(), 12);
 
 
     TEST_PASS
