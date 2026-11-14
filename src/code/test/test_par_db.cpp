@@ -905,57 +905,62 @@ TEST(import_export) {
         c1.export_db("export");
     }
 
-    // now, create a new set of ParDBs (with a different mesh size) and test the import
-    elga::ZMQAddress db1_addr { "127.0.0.1", g_idx+=inc_amount };
-    ParDBThread<ParDB> db1 { db1_addr };
-    ParDBClient c1 { db1_addr };
-    elga::ZMQAddress db2_addr { "127.0.0.1", g_idx+=inc_amount };
-    ParDBThread<ParDB> db2 { db2_addr };
-    ParDBClient c2 { db2_addr };
-    elga::ZMQAddress db3_addr { "127.0.0.1", g_idx+=inc_amount };
-    ParDBThread<ParDB> db3 { db3_addr };
-    ParDBClient c3 { db3_addr };
+    // Scoped so the importing ParDBs shut down, closing the exported files,
+    // before the directory is removed. On NFS, deleting files that are still
+    // open leaves .nfs* placeholders and remove_all fails with "Directory not empty".
+    {
+        // now, create a new set of ParDBs (with a different mesh size) and test the import
+        elga::ZMQAddress db1_addr { "127.0.0.1", g_idx+=inc_amount };
+        ParDBThread<ParDB> db1 { db1_addr };
+        ParDBClient c1 { db1_addr };
+        elga::ZMQAddress db2_addr { "127.0.0.1", g_idx+=inc_amount };
+        ParDBThread<ParDB> db2 { db2_addr };
+        ParDBClient c2 { db2_addr };
+        elga::ZMQAddress db3_addr { "127.0.0.1", g_idx+=inc_amount };
+        ParDBThread<ParDB> db3 { db3_addr };
+        ParDBClient c3 { db3_addr };
 
-    c1.add_neighbor(db2_addr);
-    c1.add_neighbor(db3_addr);
-    this_thread::sleep_for(chrono::milliseconds(50));
-    EQ(c1.num_neighbors(), 3);
+        c1.add_neighbor(db2_addr);
+        c1.add_neighbor(db3_addr);
+        this_thread::sleep_for(chrono::milliseconds(50));
+        EQ(c1.num_neighbors(), 3);
 
-    EQ(c1.db_size() + c2.db_size() + c3.db_size(), 0);
+        EQ(c1.db_size() + c2.db_size() + c3.db_size(), 0);
 
-    c1.import_db("export");
-    this_thread::sleep_for(chrono::milliseconds(50));
+        c1.import_db("export");
+        this_thread::sleep_for(chrono::milliseconds(50));
 
-    EQ(c1.db_size() + c2.db_size() + c3.db_size(), 3);
+        EQ(c1.db_size() + c2.db_size() + c3.db_size(), 3);
 
-    vector<DBEntry<>> entries;
-    auto c1_entries = c1.get_entries();
-    auto c2_entries = c2.get_entries();
-    auto c3_entries = c3.get_entries();
-    move(c1_entries.begin(), c1_entries.end(), std::back_inserter(entries));
-    move(c2_entries.begin(), c2_entries.end(), std::back_inserter(entries));
-    move(c3_entries.begin(), c3_entries.end(), std::back_inserter(entries));
+        vector<DBEntry<>> entries;
+        auto c1_entries = c1.get_entries();
+        auto c2_entries = c2.get_entries();
+        auto c3_entries = c3.get_entries();
+        move(c1_entries.begin(), c1_entries.end(), std::back_inserter(entries));
+        move(c2_entries.begin(), c2_entries.end(), std::back_inserter(entries));
+        move(c3_entries.begin(), c3_entries.end(), std::back_inserter(entries));
 
-    size_t found_count = 0;
-    bool keyed_entry_found = false;
-    for (auto & entry : entries) {
-        auto key = entry.get_key();
-        if (key == set_key) {
-            EQ(keyed_entry_found, false);
-            EQ(entry.value(), "res ");
-            EQ(entry.has_tag("a"), true);
-            EQ(entry.has_tag("b"), true);
-            EQ(entry.tags().size(), 2);
-            keyed_entry_found = true;
-        } else if (orig_keys.count(key) == 0) {
-            TEST_FAIL
-        } else {
-            ++found_count;
+        size_t found_count = 0;
+        bool keyed_entry_found = false;
+        for (auto & entry : entries) {
+            auto key = entry.get_key();
+            if (key == set_key) {
+                EQ(keyed_entry_found, false);
+                EQ(entry.value(), "res ");
+                EQ(entry.has_tag("a"), true);
+                EQ(entry.has_tag("b"), true);
+                EQ(entry.tags().size(), 2);
+                keyed_entry_found = true;
+            } else if (orig_keys.count(key) == 0) {
+                TEST_FAIL
+            } else {
+                ++found_count;
+            }
         }
-    }
 
-    EQ(found_count, 2);
-    EQ(keyed_entry_found, true);
+        EQ(found_count, 2);
+        EQ(keyed_entry_found, true);
+    }
 
     std::filesystem::remove_all("export");
 
