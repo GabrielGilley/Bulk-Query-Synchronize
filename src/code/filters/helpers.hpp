@@ -150,10 +150,13 @@ inline dbkey_t make_kmer_count_key(uint64_t encoded_kmer) { return make_kmer_key
  *        k-mers contain sequencing errors.
  *   MAX: smallest u with P(count >= u) <= 1e-3. Above it the k-mer almost
  *        certainly occurs more than once in the genome (repeat).
- * Current values assume d = 30, e = 0.01, k = 31 (mean count 22.0); recompute
- * for other datasets. */
+ * Current values assume d = 15, e = 0.01, k = 31 (mean count 11.0; also 24 at
+ * the e ~ 0.009 observed in the wgsim read names). This is the CHM13 wgsim set
+ * with R1 reads only: each R1/R2 pair covers the same 10 kb, so R1 alone is
+ * ~15x and canonical k-mers already cover both strands. Indexing R1 + R2 would
+ * double every count; recompute for other datasets (d = 30 gives MAX 39). */
 #define KMER_COUNT_MIN 2
-#define KMER_COUNT_MAX 39
+#define KMER_COUNT_MAX 24
 
 enum class KmerCountStatus { IN_RANGE, OUT_OF_RANGE, MISSING, INVALID };
 
