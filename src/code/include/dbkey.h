@@ -79,7 +79,15 @@ inline bool is_random_key(dbkey_t k) {
 #define SHORT (uint32_t)1
 #define SEQ (uint32_t)0
 #define QUAL (uint32_t)2
-#define KMER_COUNTS (uint32_t)3
+/* K-mer tables: key.a is the table constant, and the 2-bit encoded k-mer
+ * (k <= 31, so at most 62 bits) is split 31/31 across key.b and key.c:
+ *   b = low 31 bits, c = high 31 bits
+ * Node placement hashes only (a, b), so b must hold the bits that always vary.
+ * See KMER_HALF_BITS and make_kmer_key() in filters/helpers.hpp. */
+#define KMER_COUNT (uint32_t)3
+#define KMER_INV_INDEX (uint32_t)4
+#define READ_KMER_DELTA (uint32_t)5 
+#define OVERLAP_CANDIDATES (uint32_t)6
 
 /** Blockchain Key Constants, 31 bits **/
 #define BTC_KEY (uint32_t)0
@@ -123,6 +131,7 @@ inline bool is_random_key(dbkey_t k) {
 #define BNB_KEY (uint32_t)38
 #define MATIC_KEY (uint32_t)39
 #define PRODUCT_ENGAGEMENT_KEY (uint32_t)40
+#define ETH_DAG_KEY (uint32_t)41
 
 /** Filter-specific Key Constants, 16 bits */
 #define TX_IN_EDGE_KEY (uint16_t)0
@@ -143,6 +152,8 @@ inline bool is_random_key(dbkey_t k) {
 #define TX_KEY (uint16_t)15
 #define ADDR_KEY (uint16_t)16
 #define PRODUCT_ID_KEY (uint16_t)17
+#define ETH_SOURCE_ROARING_BITMAP_KEY (uint16_t)18
+#define ETH_DEST_ROARING_BITMAP_KEY (uint16_t)18
 
 #define NOT_UTXO_KEY (uint16_t)0
 #define UTXO_KEY (uint16_t)1
@@ -226,6 +237,8 @@ inline uint32_t get_blockchain_key(const char* blockchain) {
         return ETL_TOKEN_KEY;
     else if (strcmp(blockchain, "BNB") == 0)
         return BNB_KEY;
+    else if (strcmp(blockchain, "ETH_DAG") == 0)
+        return ETH_DAG_KEY;
     else
         return (uint32_t)-1;
 }

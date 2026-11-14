@@ -1,9 +1,12 @@
 # Imports
+import pando
 from timeit import default_timer as timer
 import sys
 import os
 import argparse
 import time
+# import subprocess
+
 # Argument Parser
 parser = argparse.ArgumentParser(description="")
 parser.add_argument("-r", "--results_dir", type=str, required=False, help="Path to directory where to save results")
@@ -21,44 +24,103 @@ MESH = args.mesh
 FILTER_FILE = args.filters
 
 def wait_for_stable_mesh(client):
+    print("In mesh stable")
     num_neighbors = 0
     while True:
+        print("Beginning of loop")
         time.sleep(10)
+        print("After sleep")
         n_t = client.num_neighbors()
+        print("After loop")
+        print("num_neighbors:", num_neighbors, "n_t:", n_t)
         if n_t == num_neighbors:
             print("\tMesh stabilized")
             break
         else:
             num_neighbors = n_t
-time.sleep(10)
 
-import pando
-client = pando.ParDBClient(MESH)
-print("Started Client with Mesh:", MESH)
-print("\tWaiting for mesh to be stable...")
-wait_for_stable_mesh(client)
-print("\tAdding Filter Directory")
-client.add_filter_dir('/ascldap/users/grgill/MaxReduce/src/code/build/filters')
-# client.add_filter_dir("/filters")
-print("\tBegin Data Import")
-client.import_db(DATA_DIR)
-print("\t\tWaiting for 5 seconds...")
-time.sleep(5)
-print("\t\tBeginning Import Loop")
 
 def wait_for_stable_db(client):
+    i = 0
     while True:
+        i += 1
         last_size = pando.db_size_total(client)    
         time.sleep(10)
         curr_size = pando.db_size_total(client)
+        if i % 1000 == 0:
+            print(i, "last:", last_size, "", "curr:", curr_size)
         if curr_size != 0 and curr_size == last_size:
             print("\t\tBreaking out")
             break
 
+
+def process(client, filters: list):
+    """Install filters in order, processing to completion at each BARRIER.
+
+    Any number of BARRIERs is supported. Filters before a BARRIER finish
+    processing before any filter after it is installed. Filters installed in
+    earlier phases stay installed. A BARRIER with no new filters since the
+    previous one (leading or repeated BARRIERs) is skipped, and blank lines
+    are ignored.
+    """
+    pending = False  # filters installed since the last processing pass
+    phase = 0
+    for f in filters:
+        if not f:
+            continue
+        if f != "BARRIER":
+            print("\t\tInstalling Filter:", f)
+            client.install_filter(f)
+            time.sleep(3)
+            pending = True
+        elif pending:
+            phase += 1
+            print(f"Reached barrier {phase}. Beginning processing.")
+            pando.process_blocking(client)
+            time.sleep(1)
+            print(f"End barrier {phase}.")
+            pending = False
+        else:
+            print("Skipping BARRIER: no new filters since the last one.")
+    if pending:
+        print("Final process loop")
+        pando.process_blocking(client)
+        time.sleep(1)
+        print("End final process")
+
+time.sleep(10)
+
+client = pando.ParDBClient(MESH)
+
+print("Started Client with Mesh:", MESH)
+print("\tWaiting for mesh to be stable...")
+wait_for_stable_mesh(client)
+
+print("\tAdding Filter Directory")
+client.add_filter_dir('/ascldap/users/grgill/bqs/src/code/build/filters')
+
+print("\tBegin Data Import")
+
+# DATA_DIR="/cscratch/pando-one/"
+for filename in os.listdir(DATA_DIR):
+    filepath = os.path.join(DATA_DIR, filename)
+    if os.path.isfile(filepath):
+        client.add_db_file(filepath)
+
 wait_for_stable_db(client)
-print("\tData Imported")
+# pando.import_db_blocking(client, "/cscratch/longread/")
+# pando.import_db_blocking(client, "/cscratch/eth-pre-dag-full/")
+
+print("\tData Imported: size:", pando.db_size_total(client))
+
+# print("\tExporting data...")
+# client.export_db("/cscratch/eth-pre-dag/")
+
+# wait_for_stable_db(client)
+
 print("\tInstalling Filters from", FILTER_FILE)
 # Install all filters
+filters = []
 with open(FILTER_FILE, "r") as readable:
    for line in readable:
        filter_name = line.strip()
@@ -67,25 +129,32 @@ with open(FILTER_FILE, "r") as readable:
            client.add_db_file("../../src/code/test/data/exchange_rates/bitcoin_exchange_rate")
            print("\t\tEnsuring mesh is stable...")
            wait_for_stable_db(client)
-       # elif "shortread" in filter_name:
-       #    client.add_db_file("../data/fastq_pando.txt") 
-       print("\t\tInstalling Filter:", filter_name)
-       client.install_filter(filter_name)  # Strip newline and carriage return
-       time.sleep(3)
+       if "ETH_tx_vals" in filter_name:
+           print("\t\tAdding Eth exchange rates")
+           client.add_db_file("../../src/code/test/data/exchange_rates/ethereum_exchange_rate")
+           print("\t\tEnsuring mesh is stable...")
+           wait_for_stable_db(client)
+       filters.append(filter_name)
 
 print("\tWaiting 10 seconds before processing...")
 time.sleep(10)
 
 print("\tBegin Data Processing")
 start = timer()
-client.process()  # Async
-time.sleep(1)
-while client.processing():
-    time.sleep(10) 
+process(client, filters)
+# client.process()  # Async
 end = timer()
-time_taken = str(end-start)
+time_taken = str(end - start)
 print("\tEnd Data Processing: ", time_taken)
+# print("\t Exporting data")
+# client.export_db("/cscratch/dagified-eth/")
+# wait_for_stable_db(client)
+print("Querying for results")
+idx = pando.query_all(client, ["candidate"])
+print("Results done.")
+print(idx[0].value())
 # Save results
+
 filename = os.path.join(RESULTS_DIR, TEST_NAME) + ".csv" 
 with open(filename, "a") as file:
     file.write(time_taken + ",")

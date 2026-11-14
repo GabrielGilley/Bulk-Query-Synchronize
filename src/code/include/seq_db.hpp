@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <filesystem>
 #include <exception>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -48,6 +49,23 @@ namespace pando {
 
 static string MERGE_STRATEGY_FORCE = "MERGE_STRATEGY=FORCE_MERGE";
 static string MERGE_STRATEGY_SUM = "MERGE_STRATEGY=SUM";
+
+/** @brief Start the embedded Python interpreter once per process
+ *
+ * Cython filters use single-phase init and keep their module object in a
+ * static, so they cannot be re-imported into a new interpreter after
+ * Py_FinalizeEx(). The interpreter therefore lives for the whole process
+ * (shared by every SeqDB) and is finalized once at exit.
+ */
+inline void ensure_python_initialized() {
+    if (!Py_IsInitialized()) {
+        Py_Initialize();
+        std::atexit([]() {
+            if (Py_IsInitialized())
+                Py_FinalizeEx();
+        });
+    }
+}
 
 /** @brief Contains the sequential database
  *
@@ -227,18 +245,18 @@ class SeqDB {
          * NOTE: localhost IP addresses used as default values for test cases
          * */
         SeqDB() : db_server_(ZMQAddress {"127.0.0.1", 0+MAP_LOCALNUM_OFFSET}),
-            db_(ZMQAddress {"127.0.0.1", 0+MAP_LOCALNUM_OFFSET}, ZMQAddress {"127.0.0.1", 0}) { Py_Initialize(); }
+            db_(ZMQAddress {"127.0.0.1", 0+MAP_LOCALNUM_OFFSET}, ZMQAddress {"127.0.0.1", 0}) { ensure_python_initialized(); }
 
         /** @brief Create a database with an agent id to use as seed */
         SeqDB(ZMQAddress addr) : db_server_(addr+MAP_LOCALNUM_OFFSET), db_(addr+MAP_LOCALNUM_OFFSET, addr) {
             set_agent_id(addr.serialize());
-            Py_Initialize();
+            ensure_python_initialized();
         }
 
         /** @brief Create a database with an agent id to use as seed and allocator size*/
         SeqDB(ZMQAddress addr, size_t size) : db_server_(addr+MAP_LOCALNUM_OFFSET, size), db_(addr+MAP_LOCALNUM_OFFSET, addr) {
             set_agent_id(addr.serialize());
-            Py_Initialize();
+            ensure_python_initialized();
         }
 
         /** @brief Build a SeqDB from an input file */
@@ -246,18 +264,17 @@ class SeqDB {
                 db_(ZMQAddress {"127.0.0.1", 0+MAP_LOCALNUM_OFFSET}, ZMQAddress {"127.0.0.1", 0}) {
             add_db_file(fn);
 
-            Py_Initialize();
+            ensure_python_initialized();
         }
 
-        ~SeqDB() {
-            Py_FinalizeEx();
-        }
+        // Python is intentionally not finalized here; see ensure_python_initialized().
+        ~SeqDB() = default;
 
         /** @brief Build a SeqDB from an input file with a DB size */
         SeqDB(string fn, size_t size) : db_server_(ZMQAddress {"127.0.0.1", 0+MAP_LOCALNUM_OFFSET}, size),
                                         db_(ZMQAddress {"127.0.0.1", 0+MAP_LOCALNUM_OFFSET}, ZMQAddress {"127.0.0.1", 0}) {
             add_db_file(fn);
-            Py_Initialize();
+            ensure_python_initialized();
         }
 
         /** @brief Add an input file
@@ -371,7 +388,7 @@ class SeqDB {
                 force_merge |= entry->has_tag(MERGE_STRATEGY_FORCE);
                 should_concat |= force_merge;
 
-                if (e.has_tag(MERGE_STRATEGY_SUM)) {
+                if (e.has_tag(MERGE_STRATEGY_SUM) || entry->has_tag(MERGE_STRATEGY_SUM)) {
                     should_concat = false;
                     *entry = sum_entries(&e, entry);
                 }
@@ -470,7 +487,13 @@ class SeqDB {
                 force_merge |= new_entries_it->second.has_tag(MERGE_STRATEGY_FORCE);
                 should_concat |= force_merge;
 
-                if (should_concat) {
+                // Sum numeric values, as add_entry does. Without this, two
+                // identical staged entries (e.g. two counts of "1") compare
+                // equal and the second is dropped, and differing ones are
+                // concatenated instead of added.
+                if (new_entries_it->second.has_tag(MERGE_STRATEGY_SUM) || entry.has_tag(MERGE_STRATEGY_SUM)) {
+                    new_entries_it->second = sum_entries(&(new_entries_it->second), &entry);
+                } else if (should_concat) {
                     entry = concat_entries(&(new_entries_it->second), &entry, force_merge);
                     new_entries_it->second = move(entry);
                 }

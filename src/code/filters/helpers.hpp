@@ -10,6 +10,8 @@
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/error/en.h"
+#include <cstdint>
+#include <utility>
 
 using namespace std;
 
@@ -105,6 +107,90 @@ int nucleotide_to_bits(char nucleotide)
     }
 }
 
+/* K-mer key layout (see KMER_COUNT / KMER_INV_INDEX in dbkey.h):
+ *   a = table constant
+ *   b = low 31 bits of the 2-bit encoded k-mer
+ *   c = high 31 bits
+ * A 31-mer is 62 bits, so it fills both halves; both fit as non-negative vtx_t.
+ * b holds the low bits because node placement hashes only (a, b): with the high
+ * bits in b, any k <= 15 would put b = 0 for every k-mer and send them all to one node. */
+#define LOW_16_BITS_MASK ((uint32_t)((1u << 16) - 1))
+#define LOW_32_BITS_MASK ((uint64_t)((1ull << 32) - 1))
+
+#define KMER_HALF_BITS 31
+#define KMER_HALF_MASK ((uint64_t)((1ull << KMER_HALF_BITS) - 1))
+#define KMER_MAX_BITS (2 * KMER_HALF_BITS)
+
+inline dbkey_t make_kmer_key(uint32_t table, uint64_t encoded_kmer)
+{
+    if (encoded_kmer >> KMER_MAX_BITS)
+        throw runtime_error("encoded k-mer exceeds 62 bits (k > 31)");
+
+    return {
+        static_cast<chain_info_t>(table),
+        static_cast<vtx_t>(encoded_kmer & KMER_HALF_MASK),
+        static_cast<vtx_t>((encoded_kmer >> KMER_HALF_BITS) & KMER_HALF_MASK)
+    };
+}
+
+/** @brief Recover the encoded k-mer from a key made by make_kmer_key */
+inline uint64_t kmer_from_key(const dbkey_t& key)
+{
+    return (static_cast<uint64_t>(key.c) << KMER_HALF_BITS) | static_cast<uint64_t>(key.b);
+}
+
+inline dbkey_t make_kmer_count_key(uint64_t encoded_kmer) { return make_kmer_key(KMER_COUNT, encoded_kmer); }
+
+/* Count cutoffs for indexing canonical 31-mers (count = number of reads that
+ * contain the k-mer, from read_count_canonical_kmers).
+ *
+ * Model: for a k-mer occurring once in the genome, the count is ~ Poisson(d*p),
+ * with d = coverage and p = (1 - e)^k the chance a read carries it error-free.
+ *   MIN: a k-mer in only one read cannot link two reads, and nearly all such
+ *        k-mers contain sequencing errors.
+ *   MAX: smallest u with P(count >= u) <= 1e-3. Above it the k-mer almost
+ *        certainly occurs more than once in the genome (repeat).
+ * Current values assume d = 15, e = 0.01, k = 31 (mean count 11.0; also 24 at
+ * the e ~ 0.009 observed in the wgsim read names). This is the CHM13 wgsim set
+ * with R1 reads only: each R1/R2 pair covers the same 10 kb, so R1 alone is
+ * ~15x and canonical k-mers already cover both strands. Indexing R1 + R2 would
+ * double every count; recompute for other datasets (d = 30 gives MAX 39). */
+#define KMER_COUNT_MIN 2
+#define KMER_COUNT_MAX 24
+
+enum class KmerCountStatus { IN_RANGE, OUT_OF_RANGE, MISSING, INVALID };
+
+/** @brief Look up a canonical k-mer's count and check it against the cutoffs
+ *
+ * MISSING means no count entry exists (the count phase did not run or did not
+ * cover this read); INVALID means the stored value is not a single number
+ * (e.g. counts were concatenated instead of summed).
+ */
+inline KmerCountStatus check_kmer_count(const DBAccess* access, uint64_t encoded_kmer,
+                                        double min_count = KMER_COUNT_MIN, double max_count = KMER_COUNT_MAX)
+{
+    char* value = nullptr;
+    access->get_entry_by_key.run(&access->get_entry_by_key, make_kmer_count_key(encoded_kmer), &value);
+
+    if (value == nullptr)
+        return KmerCountStatus::MISSING;
+
+    char* end = nullptr;
+    double count = strtod(value, &end);
+    bool valid = end != value && *end == '\0';
+    free(value);
+
+    if (!valid)
+        return KmerCountStatus::INVALID;
+
+    return (count >= min_count && count <= max_count) ? KmerCountStatus::IN_RANGE : KmerCountStatus::OUT_OF_RANGE;
+}
+inline dbkey_t make_kmer_inv_index_key(uint64_t encoded_kmer) { return make_kmer_key(KMER_INV_INDEX, encoded_kmer); }
+
+dbkey_t make_32bit_table_key(uint32_t table_id, uint32_t key) {
+    return {table_id, static_cast<uint16_t>((key >> 16) & 0xFFFFu), static_cast<uint16_t>(key & 0xFFFFu)};
+}
+
 long long sequence_to_bits(const string & sequence)
 {
     long long bit_representation = 0;
@@ -118,4 +204,106 @@ long long sequence_to_bits(const string & sequence)
     }
 
     return bit_representation;
+}
+
+/** @brief 2-bit encode every k-mer of seq with a rolling update (k <= 32)
+ *
+ * out[i] holds the same value as sequence_to_bits(seq.substr(i, k)), but each
+ * k-mer is derived from the previous one by shifting in one base, so the whole
+ * sequence is read once instead of k times.
+ *
+ * Returns false on the first invalid nucleotide and sets bad_pos to its index;
+ * out is left incomplete in that case.
+ */
+inline bool encode_kmers_rolling(const string& seq, size_t k, vector<uint64_t>& out, size_t& bad_pos)
+{
+    out.clear();
+    if (k == 0 || k > 32 || seq.length() < k)
+        return true;
+
+    const uint64_t mask = (k == 32) ? ~0ull : ((1ull << (2 * k)) - 1);
+    out.reserve(seq.length() - k + 1);
+
+    uint64_t code = 0;
+    for (size_t i = 0; i < seq.length(); ++i)
+    {
+        int bp = nucleotide_to_bits(seq[i]);
+        if (bp == -1)
+        {
+            bad_pos = i;
+            return false;
+        }
+        code = ((code << 2) | static_cast<uint64_t>(bp)) & mask;
+        if (i + 1 >= k)
+            out.push_back(code);
+    }
+    return true;
+}
+
+/** @brief Canonical 2-bit encoding of every k-mer of seq, with strand (k <= 32)
+ *
+ * For each position i, the k-mer seq[i, i+k) and its reverse complement are
+ * both tracked with a rolling update, and codes[i] is the smaller of the two.
+ * Because A < C < G < T in the 2-bit encoding, that is the alphabetically
+ * smaller sequence, so a read and the opposite strand of the same region give
+ * the same codes.
+ *
+ * strands[i] is 0 if the k-mer appears in seq as its canonical form and 1 if
+ * seq holds its reverse complement. For odd k a k-mer never equals its own
+ * reverse complement, so the strand is always well defined; for even k such
+ * k-mers get strand 0.
+ *
+ * Returns false on the first invalid nucleotide and sets bad_pos to its index;
+ * codes and strands are left incomplete in that case.
+ */
+inline bool encode_canonical_kmers_rolling(const string& seq, size_t k, vector<uint64_t>& codes,
+                                           vector<uint8_t>& strands, size_t& bad_pos)
+{
+    codes.clear();
+    strands.clear();
+    if (k == 0 || k > 32 || seq.length() < k)
+        return true;
+
+    const uint64_t mask = (k == 32) ? ~0ull : ((1ull << (2 * k)) - 1);
+    const unsigned top_shift = static_cast<unsigned>(2 * (k - 1));
+    codes.reserve(seq.length() - k + 1);
+    strands.reserve(seq.length() - k + 1);
+
+    uint64_t fwd = 0;
+    uint64_t rc = 0;
+    for (size_t i = 0; i < seq.length(); ++i)
+    {
+        int bp = nucleotide_to_bits(seq[i]);
+        if (bp == -1)
+        {
+            bad_pos = i;
+            return false;
+        }
+        // Forward: the new base enters at the low end.
+        fwd = ((fwd << 2) | static_cast<uint64_t>(bp)) & mask;
+        // Reverse complement: the complement (3 - bp) enters at the high end.
+        rc = (rc >> 2) | (static_cast<uint64_t>(3 - bp) << top_shift);
+        if (i + 1 >= k)
+        {
+            bool reverse = rc < fwd;
+            codes.push_back(reverse ? rc : fwd);
+            strands.push_back(reverse ? 1 : 0);
+        }
+    }
+    return true;
+}
+
+
+std::pair<uint16_t, uint16_t> roaring_key_value(uint32_t x)
+{
+    uint16_t key   = static_cast<uint16_t>(x >> 16);
+    uint16_t value = static_cast<uint16_t>(x & 0xFFFF);
+
+    return {key, value};
+}
+
+uint32_t roaring_from_key_value(uint16_t key, uint16_t value)
+{
+    return (static_cast<uint32_t>(key) << 16) |
+           static_cast<uint32_t>(value);
 }
