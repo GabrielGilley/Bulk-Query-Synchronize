@@ -19,10 +19,13 @@ size_t line_count(const string& s) {
     return count(s.begin(), s.end(), '\n') + 1;
 }
 
-DBEntry<> make_read_entry(const string& name, const string& seq, uint32_t read_id) {
+// Read entries in the format the read filters expect (and the FASTQ converters
+// produce): numeric read id, sequence, '+', quality. `name` only labels the
+// read in the test; it is not part of the entry.
+DBEntry<> make_read_entry([[maybe_unused]] const string& name, const string& seq, uint32_t read_id) {
     DBEntry<> e;
     e.add_tag("read");
-    e.add_to_value("@" + name + "\n" + seq + "\n+\n" + string(seq.size(), 'I') + "\n" + to_string(read_id));
+    e.add_to_value(to_string(read_id) + "\n" + seq + "\n+\n" + string(seq.size(), 'I'));
     return e;
 }
 
