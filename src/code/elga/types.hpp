@@ -108,7 +108,8 @@ using it_t = int32_t;
 #define GET_STATE                 0xd1
 /* 0xd2, 0xd3: upstream Pando's EXPORT_DB_WITH_TAG* (not in BQS) */
 #define MAP_GET_TAGS_BY_KEYS      0xd4
-/* 0xd5, 0xd6: upstream Pando's PROGRESS, STAGE_EVENT */
+#define PROGRESS                  0xd5
+#define STAGE_EVENT               0xd6
 #define GET_ENTRIES_BY_KEYS       0xd7
 #define MAP_RETRIEVE_VALUES       0xd8
 #define WANT_HEARTBEAT            0xfe
