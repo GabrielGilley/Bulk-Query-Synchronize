@@ -12,7 +12,7 @@ FILTERS="filters/overlap_canonical.txt"
 # DATA_DIR="/cscratch/eth-pre-dag-full/"
 # DATA_DIR="/cscratch/fastq/pando/pando"
 # DATA_DIR="/cscratch/pando-few"
-DATA_DIR="/cscratch/pando-one"
+DATA_DIR="/cscratch/pando-chr13-R1"
 RESULTS_DIR="/cscratch/results/"
 NODE_COUNT=8
 
