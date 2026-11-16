@@ -23,23 +23,52 @@ def num(v):
         return None
 
 
+DAMAGE = []  # (file, description) for files with NUL bytes or broken rows
+
+
+def read_clean(path):
+    """Return the file's lines with NUL bytes removed.
+
+    A node that dies mid-write on NFS leaves runs of NUL bytes where its last
+    appends should be; note where they are, since that marks when the node died.
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+    nul = data.count(b"\0")
+    if nul:
+        first = data.index(b"\0")
+        line_no = data.count(b"\n", 0, first) + 1
+        DAMAGE.append((os.path.basename(path), f"{nul} NUL bytes, first at line {line_no}"))
+        data = data.replace(b"\0", b"")
+    return data.decode("utf-8", errors="replace").splitlines()
+
+
 def load_csv(path):
-    with open(path, newline="") as f:
-        rows = []
-        for r in csv.DictReader(f):
-            rows.append({k: (v if k in ("phase", "state") else num(v)) for k, v in r.items()})
-        return rows
+    lines = read_clean(path)
+    if not lines:
+        return []
+    header = next(csv.reader([lines[0]]))
+    rows, bad = [], 0
+    for fields in csv.reader(lines[1:]):
+        if len(fields) != len(header) or num(fields[0]) is None:
+            bad += 1
+            continue
+        rows.append({k: (v if k in ("phase", "state") else num(v)) for k, v in zip(header, fields)})
+    if bad:
+        DAMAGE.append((os.path.basename(path), f"{bad} malformed rows skipped"))
+    rows.sort(key=lambda r: r["ts"])
+    return rows
 
 
 def load_events(path):
     out = []
     if not os.path.exists(path):
         return out
-    with open(path) as f:
-        for line in f:
-            parts = line.rstrip("\n").split(" ", 3)
-            if len(parts) == 4:
-                out.append((float(parts[0]), parts[3]))
+    for line in read_clean(path):
+        parts = line.split(" ", 3)
+        if len(parts) == 4 and num(parts[0]) is not None:
+            out.append((float(parts[0]), parts[3]))
+    out.sort(key=lambda e: e[0])
     return out
 
 
@@ -47,11 +76,10 @@ def load_phases(mon_dir):
     path = os.environ.get("PANDO_PHASE_FILE") or os.path.join(mon_dir, "phases.log")
     out = []
     if os.path.exists(path):
-        with open(path) as f:
-            for line in f:
-                ts, _, name = line.strip().partition(" ")
-                if num(ts) is not None:
-                    out.append((float(ts), name))
+        for line in read_clean(path):
+            ts, _, name = line.strip().partition(" ")
+            if num(ts) is not None:
+                out.append((float(ts), name))
     return out
 
 
@@ -79,7 +107,8 @@ def at_or_before(rows, ts):
 def rate(rows, end_ts, window, key):
     """MiB/s change of `key` over the `window` seconds ending at end_ts."""
     end = at_or_before(rows, end_ts)
-    start = at_or_before(rows, end_ts - window)
+    # If the run is shorter than the window, use the whole run
+    start = at_or_before(rows, end_ts - window) or (rows[0] if rows else None)
     if not end or not start or end is start:
         return None
     a, b = start.get(key), end.get(key)
@@ -117,7 +146,26 @@ def main():
         events[h] = load_events(os.path.join(args.mon_dir, f"{h}.events.log"))
     phases = load_phases(args.mon_dir)
 
-    t0 = min(r["ts"] for h in hosts for r in nodes[h][:1])
+    empty = [h for h in hosts if not nodes[h]]
+    hosts = [h for h in hosts if nodes[h]]
+    if not hosts:
+        sys.exit("no usable samples in any *.node.csv")
+    if args.node and args.node not in hosts:
+        sys.exit(f"--node {args.node}: no samples for that host (have: {', '.join(hosts)})")
+
+    t0 = min(nodes[h][0]["ts"] for h in hosts)
+
+    if DAMAGE or empty:
+        print("=" * 78)
+        print("DAMAGED FILES (NUL bytes usually mean the node died before its last NFS writes landed)")
+        for name, what in DAMAGE:
+            print(f"  {name}: {what}")
+        for h in empty:
+            print(f"  {h}.node.csv: no usable rows")
+        for h in hosts:
+            if any(n.startswith(h + ".") for n, _ in DAMAGE):
+                print(f"  {h}: last good sample at {fmt_t(nodes[h][-1]['ts'], t0)}")
+        print()
 
     # ------------------------------------------------------------ phases
     print("=" * 78)
