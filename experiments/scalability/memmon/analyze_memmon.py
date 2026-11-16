@@ -69,7 +69,16 @@ def load_events(path):
         if len(parts) == 4 and num(parts[0]) is not None:
             out.append((float(parts[0]), parts[3]))
     out.sort(key=lambda e: e[0])
-    return out
+    # Older monitor versions could report one dying pid as GONE many times; keep the first
+    seen, dedup = set(), []
+    for ts, msg in out:
+        if msg.startswith("GONE "):
+            pid = msg.split()[1]
+            if pid in seen:
+                continue
+            seen.add(pid)
+        dedup.append((ts, msg))
+    return dedup
 
 
 def load_phases(mon_dir):
@@ -142,7 +151,8 @@ def main():
     for h in hosts:
         nodes[h] = load_csv(os.path.join(args.mon_dir, f"{h}.node.csv"))
         p = os.path.join(args.mon_dir, f"{h}.procs.csv")
-        procs[h] = load_csv(p) if os.path.exists(p) else []
+        # Zombie/exiting rows (state Z or X) report 0 memory; drop them
+        procs[h] = [r for r in load_csv(p) if r.get("state") not in ("Z", "X")] if os.path.exists(p) else []
         events[h] = load_events(os.path.join(args.mon_dir, f"{h}.events.log"))
     phases = load_phases(args.mon_dir)
 

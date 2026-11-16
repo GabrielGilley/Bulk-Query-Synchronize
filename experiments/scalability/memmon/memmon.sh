@@ -174,6 +174,7 @@ PROC_HDR="ts,pid,agent,state,cpu_s,threads,rss,anon,file,shmem,swap,hwm,bigspace
 declare -A AGENT_OF     # pid -> agent id (the ",ID" in the bind address)
 declare -A BIGFILE_OF   # pid -> its BigSpace backing file(s), space separated
 declare -A LAST_ROW     # pid -> last proc row (for the "gone" report)
+declare -A DEAD         # pids already reported gone; never tracked again
 
 register_pid() {
     local pid=$1 args agent
@@ -253,8 +254,15 @@ while true; do
     SLOW=$(( SAMPLE % SLOW_EVERY == 1 ))
 
     # --- which pardb processes exist now
+    # A dying (OOM-killed) process can sit in state Z/X, or flicker in and out
+    # of pgrep while its memory is torn down. Count it as gone the first time
+    # and never pick it up again.
     declare -A NOW=()
     for pid in $(pgrep -x "$PROC_NAME" 2>/dev/null); do
+        [[ -n ${DEAD[$pid]+x} ]] && continue
+        read -r pstat 2>/dev/null < /proc/$pid/stat || continue
+        pstat=${pstat##*) }
+        [[ ${pstat%% *} == [ZX] ]] && continue
         NOW[$pid]=1
         [[ -n ${AGENT_OF[$pid]+x} ]] || register_pid "$pid"
     done
@@ -264,6 +272,7 @@ while true; do
         if [[ -z ${NOW[$pid]+x} ]]; then
             log_event "GONE pid=$pid agent=${AGENT_OF[$pid]} phase=$(current_phase) last_row=${LAST_ROW[$pid]:-none}"
             unset "AGENT_OF[$pid]" "BIGFILE_OF[$pid]" "LAST_ROW[$pid]"
+            DEAD[$pid]=1
             GONE_NOW=1
         fi
     done
@@ -295,6 +304,7 @@ while true; do
         rest=${statline##*) }
         read -r -a f <<< "$rest"
         pstate=${f[0]}
+        [[ $pstate == [ZX] ]] && continue
         cpu_s=$(( (f[11] + f[12]) / CLK_TCK ))
 
         big=0
