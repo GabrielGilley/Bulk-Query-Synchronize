@@ -30,6 +30,16 @@ echo CHECKING SCRATCH SPACE
 srun bash -c 'ls /scratch'
 srun bash -c 'ls /tmp'
 
+### Memory monitor: one copy per node, alongside the pardb tasks.
+# --overlap lets it share the CPUs the pardb step already holds.
+# Output: $MEMMON_DIR (also where par-script.py writes phases.log)
+MEMMON_DIR=${MEMMON_DIR:-/cscratch/memmon/$SLURM_JOB_ID}
+mkdir -p "$MEMMON_DIR"
+echo "MEMMON_DIR=$MEMMON_DIR"
+srun --overlap -N "$SLURM_JOB_NUM_NODES" --ntasks-per-node=1 -c 1 --kill-on-bad-exit=0 \
+    bash "$SCRIPT_DIR/memmon/memmon.sh" "$MEMMON_DIR" "${MEMMON_INTERVAL:-2}" &
+MEMMON_PID=$!
+
 echo START
 date
 echo $PANDO_MESH_ENTRY 
@@ -39,4 +49,8 @@ srun --unbuffered bash pardb.internal $PANDO_MESH_ENTRY $PANDO_PARDB_BIN $PANDO_
 
 echo FINISH
 date
+
+# Stop the monitor (it also exits by itself once pardb has been gone a while)
+kill "$MEMMON_PID" 2>/dev/null
+wait "$MEMMON_PID" 2>/dev/null
 

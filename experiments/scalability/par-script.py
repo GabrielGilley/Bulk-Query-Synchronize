@@ -23,6 +23,16 @@ TEST_NAME = args.test_name
 MESH = args.mesh
 FILTER_FILE = args.filters
 
+# Phase markers for the memory monitor (memmon/memmon.sh). Each line is
+# "epoch phase"; the monitor tags its samples with the latest phase.
+PHASE_FILE = os.environ.get("PANDO_PHASE_FILE")
+
+def mark(phase):
+    print(f"[phase {time.strftime('%H:%M:%S')}] {phase}", flush=True)
+    if PHASE_FILE:
+        with open(PHASE_FILE, "a") as pf:
+            pf.write(f"{time.time():.3f} {phase}\n")
+
 def wait_for_stable_mesh(client):
     print("In mesh stable")
     num_neighbors = 0
@@ -76,17 +86,21 @@ def process(client, filters: list):
         elif pending:
             phase += 1
             print(f"Reached barrier {phase}. Beginning processing.")
+            mark(f"barrier {phase} processing")
             pando.process_blocking(client)
             time.sleep(1)
             print(f"End barrier {phase}.")
+            mark(f"barrier {phase} done")
             pending = False
         else:
             print("Skipping BARRIER: no new filters since the last one.")
     if pending:
         print("Final process loop")
+        mark("final processing")
         pando.process_blocking(client)
         time.sleep(1)
         print("End final process")
+        mark("final done")
 
 time.sleep(10)
 
@@ -100,6 +114,7 @@ print("\tAdding Filter Directory")
 client.add_filter_dir('/ascldap/users/grgill/bqs/src/code/build/filters')
 
 print("\tBegin Data Import")
+mark("import")
 
 # DATA_DIR="/cscratch/pando-one/"
 for filename in os.listdir(DATA_DIR):
@@ -112,6 +127,7 @@ wait_for_stable_db(client)
 # pando.import_db_blocking(client, "/cscratch/eth-pre-dag-full/")
 
 print("\tData Imported: size:", pando.db_size_total(client))
+mark("import done")
 
 # print("\tExporting data...")
 # client.export_db("/cscratch/eth-pre-dag/")
@@ -150,6 +166,7 @@ print("\tEnd Data Processing: ", time_taken)
 # client.export_db("/cscratch/dagified-eth/")
 # wait_for_stable_db(client)
 print("Querying for results")
+mark("query")
 idx = pando.query_all(client, ["candidate"])
 print("Results done.")
 print(idx[0].value())

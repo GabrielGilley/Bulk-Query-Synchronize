@@ -56,6 +56,13 @@ MESH="${IP_ADDRESS},0"
 
 echo "MESH: $MESH"
 
+# Memory monitor output (written by memmon.sh from pardb.sbatch). par-script.py
+# appends phase markers here so each memory sample is tagged with its phase.
+export MEMMON_DIR="/cscratch/memmon/$JOB_ID"
+mkdir -p "$MEMMON_DIR"
+export PANDO_PHASE_FILE="$MEMMON_DIR/phases.log"
+echo "Memory monitor: $MEMMON_DIR (analyze: python3 memmon/analyze_memmon.py $MEMMON_DIR)"
+
 echo "Beginning Experiment..."
 echo "Params: $TEST_NAME $MESH $FILTERS $DATA_DIR $RESULTS_DIR"
 # singularity run -B /cscratch -B /scratch ./../../src/sifs/pando_python.sif python3 dagify-script.py -n $TEST_NAME -m $MESH -f $FILTERS -d $DATA_DIR -r $RESULTS_DIR
