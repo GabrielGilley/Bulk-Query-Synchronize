@@ -80,8 +80,13 @@ class ParDB : public PandoParticipant {
         size_t max_keys_per_request_ = 65536;
 
     public:
-        /** @brief Initialize the parallel DB */
-        ParDB(ZMQAddress addr, size_t sz, bool skip_group_filters=false) :
+        /** @brief Initialize the parallel DB
+         *
+         * @param max_filters_per_stage if nonzero, how many filter runs one
+         *        processing pass may do before the stage closes (see
+         *        SeqDB::set_max_filters_per_stage); 0 keeps the default
+         */
+        ParDB(ZMQAddress addr, size_t sz, bool skip_group_filters=false, size_t max_filters_per_stage=0) :
                 PandoParticipant(addr, true),
                 db_refs_(this,
                     s_ref_add_entry,
@@ -109,6 +114,7 @@ class ParDB : public PandoParticipant {
             sub(EXPORT_DB);
 
             if (skip_group_filters_) db_.disable_group_filters();
+            if (max_filters_per_stage != 0) db_.set_max_filters_per_stage(max_filters_per_stage);
         }
         ParDB(ZMQAddress addr) : ParDB(addr, 2ull*(1ull<<29)) { }
 

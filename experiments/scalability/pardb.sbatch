@@ -11,6 +11,10 @@
 #####################
 ## Cluster parameters
 
+### Script arguments (passed after the script name: sbatch ... pardb.sbatch [N])
+# $1: max filter runs per processing pass (optional; empty = pando_pardb default)
+MAX_FILTERS_PER_STAGE="${1:-}"
+
 ### Pando connection information
 echo "outputting"
 node=$(echo $SLURM_JOB_NODELIST | cut -d '-' -f1 - | cut -d ',' -f1 - | tr -d '[')
@@ -45,7 +49,8 @@ date
 echo $PANDO_MESH_ENTRY 
 echo $PANDO_PARDB_BIN
 echo $PANDO_BIND_IP_FILE
-srun --unbuffered bash pardb.internal $PANDO_MESH_ENTRY $PANDO_PARDB_BIN $PANDO_BIND_IP_FILE
+echo "MAX_FILTERS_PER_STAGE=${MAX_FILTERS_PER_STAGE:-default}"
+srun --unbuffered bash pardb.internal $PANDO_MESH_ENTRY $PANDO_PARDB_BIN $PANDO_BIND_IP_FILE "$MAX_FILTERS_PER_STAGE"
 
 echo FINISH
 date

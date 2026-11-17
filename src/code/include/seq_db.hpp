@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <filesystem>
 #include <exception>
+#include <stdexcept>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -13,11 +14,12 @@
 #include <iterator>
 #include <algorithm>
 #include <chrono>
-#include <boost/lexical_cast.hpp>
-#include <boost/lexical_cast/bad_lexical_cast.hpp>
+#include <charconv>
+#include <cmath>
+#include <string_view>
+#include <system_error>
 #include "absl/container/flat_hash_map.h"
 #include "Python.h"
-
 
 #include "pigo.hpp"
 
@@ -49,7 +51,11 @@ typedef int (*db_query_t)(dbkey_t, const char*, const char* const*, const DBAcce
 namespace pando {
 
 static string MERGE_STRATEGY_FORCE = "MERGE_STRATEGY=FORCE_MERGE";
+/** Entries with the same key that both carry this tag have their numeric
+ * values added when merged (see SeqDB::sum_entries) */
 static string MERGE_STRATEGY_SUM = "MERGE_STRATEGY=SUM";
+static string MERGED_SUM = "MERGED_SUM";
+static string MERGED_SUM_FAILED = "MERGED_SUM_FAILED";
 
 /** @brief Start the embedded Python interpreter once per process
  *
@@ -179,64 +185,139 @@ class SeqDB {
         /** @brief Hold entries that need their values updates */
         absl::flat_hash_map<dbkey_t, string> val_updates_;
 
+        /** @brief How many filter runs one pass of run_filters_() may do
+         * before it stops, so the stage can close. Entries created by those
+         * runs (and messages for them) are held in memory until the stage
+         * closes, so a smaller value bounds that memory at the cost of more
+         * passes.
+         */
+        size_t max_filters_per_stage_ = 100000;
+
+        /** @brief Cursor over the entries for run_filters_(): a snapshot of
+         * the keys and the next position in it. A pass that stops at
+         * max_filters_per_stage_ leaves the cursor where it stopped, so the
+         * next pass continues there instead of rescanning from the first key.
+         * scan_pos_ == 0 means the next pass starts a new lap on a fresh
+         * snapshot.
+         */
+        vector<dbkey_t> scan_keys_;
+        size_t scan_pos_ = 0;
+
+        /** @brief Total entries offered to the filters (for tests/diagnostics) */
+        size_t entries_examined_ = 0;
+
+        /** @brief Start the next pass on a fresh snapshot, freeing the old one */
+        void reset_scan_() {
+            vector<dbkey_t>().swap(scan_keys_);
+            scan_pos_ = 0;
+        }
+
+        /** @brief Run the installed single-entry filters for one processing pass
+         *
+         * Entries are scanned with a cursor that carries over between passes
+         * (see scan_keys_): when a pass stops at max_filters_per_stage_, the
+         * next one continues from where it stopped.
+         *
+         * @return true if any filter ran. false only once a full lap, over a
+         * snapshot of the keys taken during this pass, ran no filter. The DB
+         * does not change during a pass (filter output is staged until the
+         * stage closes, and nothing is received while filters run), so at
+         * that point no entry qualifies for any filter. An entry behind the
+         * cursor that becomes runnable at a stage close (from this agent or
+         * another) is therefore always picked up on a later lap.
+         *
+         * Within one pass, an entry is not offered again after any filter has
+         * run, since that filter's staged changes are not visible yet.
+         */
         bool run_filters_() {
             bool filter_ran = false;
-            auto keys = db_.keys();
-            size_t i = 0;
-            size_t num_keys [[maybe_unused]]  = keys.size(); // unused w/o verbosity
 
-            // limit how many filters we run before a stage close to help with memory usage
-            size_t MAX_FILTERS_TO_RUN = 100000;
+            // Limit how many filters we run before a stage close to help with
+            // memory usage (see max_filters_per_stage_). The limit is checked
+            // after all filters have been offered an entry, so a pass can go
+            // over it by up to (installed filters - 1).
             size_t num_filters_run = 0;
-
-
-            // Iterate through the database
-            for (auto & key : keys) {         // TODO : replace this with a C++ iterator that automatically "batches" behind the scene
-                auto entry = db_.retrieve(key); //TODO also batch retrievals
-                ++i;
-                #ifdef VERBOSE
-                if (i % 10000 == 0) {
-                    cerr << "I have processed " << i << "/" <<  num_keys << " entries and run " << num_filters_run << " filters"  << endl;
-                }
-                #endif
-                // @TODO profile to determine if this needs to be optimized out.
-                //       this costs (|F|*|E|)
-                for (auto & [filter_name, filter] : installed_filters_) {
-                    // Only run on filters that are SINGLE_ENTRY filters
-                    if (filter->filter_type() != SINGLE_ENTRY) {
-                        continue;
-                    }
-
-                    // @TODO move back out; make a test for add tags and then
-                    // get tags inside of a filter
-                    // Get the DB access -- need to redo this for each filter,
-                    // can't be pulled out of the loop because things can
-                    // change between filter runs
-                    DBAccess* access = entry.access();
-                    add_db_access(access);
-
-                    if (filter->should_run(access)) {
-                        filter_ran = true;
-                        filter->run(access);
-                        ++num_filters_run;
-                    }
-
-                    delete access;
-                }
-
-                if (num_filters_run > MAX_FILTERS_TO_RUN) {
-                    #ifdef VERBOSE
-                    cerr << "breaking early due to max filter run limit" << endl;
-                    #endif
-                    break;
-                }
-            }
-
             #ifdef VERBOSE
-            cerr << "done processing" << endl;
+            size_t i = 0;   // entries this pass
             #endif
 
-            return filter_ran;
+            // Start a new lap on a fresh snapshot if the last one finished
+            if (scan_pos_ == 0 || scan_pos_ >= scan_keys_.size()) {
+                scan_keys_ = db_.keys();
+                scan_pos_ = 0;
+            }
+            bool lap_from_start = (scan_pos_ == 0);
+
+            while (true) {
+                while (scan_pos_ < scan_keys_.size()) {
+                    dbkey_t key = scan_keys_[scan_pos_++];
+                    // The snapshot can be older than this pass; skip anything gone
+                    auto [entry, exists] = db_.retrieve_if_exists(key); //TODO also batch retrievals
+                    ++entries_examined_;
+                    if (!exists) continue;
+                    #ifdef VERBOSE
+                    if (++i % 10000 == 0) {
+                        cerr << "I have processed " << i << " entries this pass (cursor at " << scan_pos_ << "/"
+                             << scan_keys_.size() << ") and run " << num_filters_run << " filters" << endl;
+                    }
+                    #endif
+                    // @TODO profile to determine if this needs to be optimized out.
+                    //       this costs (|F|*|E|)
+                    for (auto & [filter_name, filter] : installed_filters_) {
+                        // Only run on filters that are SINGLE_ENTRY filters
+                        if (filter->filter_type() != SINGLE_ENTRY) {
+                            continue;
+                        }
+
+                        // @TODO move back out; make a test for add tags and then
+                        // get tags inside of a filter
+                        // Get the DB access -- need to redo this for each filter,
+                        // can't be pulled out of the loop because things can
+                        // change between filter runs
+                        DBAccess* access = entry.access();
+                        add_db_access(access);
+
+                        if (filter->should_run(access)) {
+                            filter_ran = true;
+                            filter->run(access);
+                            ++num_filters_run;
+                        }
+
+                        delete access;
+                    }
+
+                    if (num_filters_run >= max_filters_per_stage_) {
+                        #ifdef VERBOSE
+                        cerr << "breaking early due to max filter run limit (cursor at " << scan_pos_ << "/"
+                             << scan_keys_.size() << ")" << endl;
+                        #endif
+                        // Keep the cursor; the next pass continues from here
+                        return true;
+                    }
+                }
+
+                // Reached the end of the snapshot
+                if (filter_ran) {
+                    // Next pass starts a new lap, which will see this pass's changes
+                    reset_scan_();
+                    return true;
+                }
+                if (lap_from_start) {
+                    // A full lap of a current snapshot ran nothing: done
+                    #ifdef VERBOSE
+                    cerr << "done processing" << endl;
+                    #endif
+                    reset_scan_();
+                    return false;
+                }
+                // Nothing ran, but this pass began mid-snapshot, so entries
+                // before the cursor have not been checked in their current
+                // state. Nothing is staged yet, so it is safe to start a full
+                // lap on a fresh snapshot within this same pass.
+                scan_keys_ = db_.keys();
+                scan_pos_ = 0;
+                lap_from_start = true;
+            }
         }
 
 
@@ -373,9 +454,6 @@ class SeqDB {
             }
 
             dbkey_t key = entry->get_key();
-            for (auto &tag : entry->tags()) {
-                add_to_tag_index_(key, tag);
-            }
             handle_subscriptions(key);
 
             //If the key already exists, we concatenate the entries' values and tags
@@ -389,13 +467,19 @@ class SeqDB {
                 force_merge |= entry->has_tag(MERGE_STRATEGY_FORCE);
                 should_concat |= force_merge;
 
-                if (e.has_tag(MERGE_STRATEGY_SUM) || entry->has_tag(MERGE_STRATEGY_SUM)) {
+                if (e.has_tag(MERGE_STRATEGY_SUM) && entry->has_tag(MERGE_STRATEGY_SUM)) {
                     should_concat = false;
                     *entry = sum_entries(&e, entry);
                 }
 
                 if (should_concat)
                     *entry = concat_entries(&e, entry, force_merge);
+            }
+
+            // Index the tags after merging, so tags the merge added (MERGED,
+            // MERGED_SUM, MERGED_SUM_FAILED) are indexed too
+            for (auto &tag : entry->tags()) {
+                add_to_tag_index_(key, tag);
             }
         }
 
@@ -412,29 +496,116 @@ class SeqDB {
             db_.insert_multiple(entries);
         }
 
+        /** @brief A parsed MERGE_STRATEGY=SUM value */
+        struct sum_value_t {
+            bool is_int;
+            __int128 i;     // valid if is_int
+            double d;       // always valid
+        };
+
+        /** @brief Parse an optionally negative base-10 integer into an __int128
+         * @return false if s is not an integer or does not fit
+         */
+        static bool parse_sum_int_(string_view s, __int128& out) {
+            bool neg = false;
+            if (!s.empty() && s[0] == '-') { neg = true; s.remove_prefix(1); }
+            if (s.empty()) return false;
+            // Accumulate the magnitude; the negative range is one larger
+            const unsigned __int128 limit = neg
+                ? (unsigned __int128)1 << 127
+                : ((unsigned __int128)1 << 127) - 1;
+            unsigned __int128 mag = 0;
+            for (char c : s) {
+                if (c < '0' || c > '9') return false;
+                unsigned d = c - '0';
+                if (mag > (limit - d) / 10) return false;
+                mag = mag * 10 + d;
+            }
+            if (mag == 0) out = 0;
+            else out = neg ? -(__int128)(mag - 1) - 1 : (__int128)mag;
+            return true;
+        }
+
+        /** @brief Parse a value to sum. Leading and trailing whitespace is
+         * ignored, so values built with DBEntry::add_to_value() (which ends
+         * them with a newline) can be summed.
+         * @return false if the value is not a finite number
+         */
+        static bool parse_sum_value_(const string& value, sum_value_t& out) {
+            static const char* ws = " \t\n\r\f\v";
+            size_t b = value.find_first_not_of(ws);
+            if (b == string::npos) return false;
+            size_t e = value.find_last_not_of(ws);
+            string_view s {value.data() + b, e - b + 1};
+
+            if (parse_sum_int_(s, out.i)) {
+                out.is_int = true;
+                out.d = (double)out.i;
+                return true;
+            }
+
+            double d = 0;
+            auto [ptr, ec] = from_chars(s.data(), s.data() + s.size(), d);
+            if (ec != errc() || ptr != s.data() + s.size() || !isfinite(d)) return false;
+            out.is_int = false;
+            out.d = d;
+            return true;
+        }
+
+        static string format_sum_int_(__int128 v) {
+            bool neg = v < 0;
+            unsigned __int128 mag = neg ? (unsigned __int128)(-(v + 1)) + 1 : (unsigned __int128)v;
+            string digits;
+            do { digits += (char)('0' + (int)(mag % 10)); mag /= 10; } while (mag != 0);
+            if (neg) digits += '-';
+            return string(digits.rbegin(), digits.rend());
+        }
+
+        /** @brief Shortest decimal form that reads back as the same double */
+        static string format_sum_double_(double v) {
+            char buf[64];
+            auto [ptr, ec] = to_chars(buf, buf + sizeof(buf), v);
+            if (ec != errc()) throw runtime_error("Unable to format summed value");
+            return string(buf, ptr);
+        }
+
+        /** @brief Merge two MERGE_STRATEGY=SUM entries by adding their values
+         *
+         * If both values are integers, they are added exactly (128-bit) and
+         * stored as an integer, e.g. "1" + "2" = "3". Otherwise they are
+         * added as doubles and stored in the shortest form that reads back
+         * exactly, e.g. "1.2" + "2.3" = "3.5". The result is tagged
+         * MERGED_SUM.
+         *
+         * If either value is not a number, the entries are concatenated
+         * instead, as concat_entries does, and tagged MERGED_SUM_FAILED, so
+         * no data is lost. Later merges on that key will also fail; a warning
+         * is printed the first time a key fails.
+         */
         DBEntry<> sum_entries(DBEntry<>* e1, DBEntry<>* e2) {
+            sum_value_t v1 {}, v2 {};
+            if (!parse_sum_value_(e1->value(), v1) || !parse_sum_value_(e2->value(), v2)) {
+                if (!e1->has_tag(MERGED_SUM_FAILED) && !e2->has_tag(MERGED_SUM_FAILED)) {
+                    cerr << "[Pando] [WARNING] " << MERGE_STRATEGY_SUM << ": value for key " << e1->get_key()
+                         << " is not a number; concatenating instead (tagged " << MERGED_SUM_FAILED << ")" << endl;
+                }
+                DBEntry<> failed = concat_entries(e1, e2);
+                failed.add_tag(MERGED_SUM_FAILED);
+                return failed;
+            }
+
             DBEntry<> new_entry;
             new_entry.set_key(e1->get_key());
-            vector<string> tag_union;
-            auto e1_tags = e1->tags();
-            auto e2_tags = e2->tags();
-            set_union(e1_tags.begin(), e1_tags.end(), e2_tags.begin(), e2_tags.end(), inserter(tag_union, tag_union.begin()));
+            for (auto &tag : e1->tags()) new_entry.add_tag(tag);
+            for (auto &tag : e2->tags()) new_entry.add_tag(tag);
+            new_entry.add_tag(MERGED_SUM);
 
-            for (auto &tag : tag_union) {
-                new_entry.add_tag(tag);
-            }
+            __int128 isum = 0;
+            if (v1.is_int && v2.is_int && !__builtin_add_overflow(v1.i, v2.i, &isum))
+                new_entry.value() = format_sum_int_(isum);
+            else
+                new_entry.value() = format_sum_double_(v1.d + v2.d);
 
-            try {
-                double num1 = boost::lexical_cast<double>(e1->value());
-                double num2 = boost::lexical_cast<double>(e2->value());
-                double sum = num1 + num2;
-                new_entry.value() = to_string(sum);
-                new_entry.add_tag("MERGED_SUM");
-            } catch (const boost::bad_lexical_cast& exc) {
-                DBEntry<> new_concat_entry = concat_entries(e1, e2).add_tag("MERGED_SUM_FAILED");
-                new_concat_entry.set_key(e1->get_key());
-                return new_concat_entry;
-            }
             return new_entry;
         }
 
@@ -488,11 +659,11 @@ class SeqDB {
                 force_merge |= new_entries_it->second.has_tag(MERGE_STRATEGY_FORCE);
                 should_concat |= force_merge;
 
-                // Sum numeric values, as add_entry does. Without this, two
-                // identical staged entries (e.g. two counts of "1") compare
-                // equal and the second is dropped, and differing ones are
-                // concatenated instead of added.
-                if (new_entries_it->second.has_tag(MERGE_STRATEGY_SUM) || entry.has_tag(MERGE_STRATEGY_SUM)) {
+                // Sum numeric values when both entries ask for it, as
+                // add_entry does. Without this, two identical staged entries
+                // (e.g. two values of "1") compare equal and the second is
+                // dropped, and differing ones are concatenated instead of added.
+                if (new_entries_it->second.has_tag(MERGE_STRATEGY_SUM) && entry.has_tag(MERGE_STRATEGY_SUM)) {
                     new_entries_it->second = sum_entries(&(new_entries_it->second), &entry);
                 } else if (should_concat) {
                     entry = concat_entries(&(new_entries_it->second), &entry, force_merge);
@@ -603,7 +774,25 @@ class SeqDB {
             string filter_name { filter->name() };
             // Add it to the installed list
             installed_filters_[filter_name] = filter;
+            // New filters may apply to entries behind the cursor
+            reset_scan_();
         }
+
+        /** @brief Set how many filter runs one processing pass may do
+         * before stopping so the stage can close (default 100000)
+         */
+        void set_max_filters_per_stage(size_t n) {
+            if (n == 0) throw invalid_argument("max_filters_per_stage must be at least 1");
+            max_filters_per_stage_ = n;
+        }
+
+        /** @brief Return how many filter runs one processing pass may do */
+        size_t max_filters_per_stage() const { return max_filters_per_stage_; }
+
+        /** @brief Return how many entries have been offered to the filters in
+         * total (each entry fetched by a processing pass counts once)
+         */
+        size_t entries_examined() const { return entries_examined_; }
 
         /** @brief Return the number of installed filters*/
         size_t num_filters() {return installed_filters_.size();}
@@ -620,6 +809,7 @@ class SeqDB {
         /** @brief Clear the installed filters */
         void clear_filters() {
             installed_filters_.clear();
+            reset_scan_();
         }
 
         /** @brief Process one iteration, returning whether any filters were ran */
