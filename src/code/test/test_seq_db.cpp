@@ -1163,6 +1163,10 @@ TEST(get_entries_by_keys_local) {
 
     // An empty batch is fine
     d.get_entry_values_by_keys(0, keys, values);
+
+    TEST_PASS
+}
+
 // Filter for the max_filters_per_stage tests: runs on entries tagged "A" that
 // it hasn't tagged "A:done" yet, so each entry is filtered exactly once
 static size_t g_TEST_max_filters_runs;
