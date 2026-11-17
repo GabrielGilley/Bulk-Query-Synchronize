@@ -15,8 +15,8 @@ using namespace pando;
  *
  * Count entries are keyed with make_kmer_count_key() (KMER_COUNT table) using
  * the same canonical encoding as read_kmer_index_frag and overlap_search, and
- * are tagged MERGE_STRATEGY=SUM so BQS adds them on merge. Summed values are
- * written as decimals (e.g. "22.000000"); parse them with stod/stoul.
+ * are tagged MERGE_STRATEGY=SUM so BQS adds them on merge. Summed counts are
+ * written as plain integers (e.g. "22"); parse them with stoul or strtod.
  *
  * Input: entries tagged "read" whose value is
  *   read_id \n sequence \n + \n quality
