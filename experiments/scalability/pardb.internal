@@ -5,6 +5,10 @@ PANDO_BIND_IP_FILE="$1"; shift
 MAX_FILTERS_PER_STAGE="${1:-}"
 
 PARDB_EXTRA_ARGS=()
+if [[ -n "$MAX_FILTERS_PER_STAGE" && ! "$MAX_FILTERS_PER_STAGE" =~ ^[1-9][0-9]*$ ]]; then
+    echo "pardb.internal: max filters per stage must be a positive integer, got '$MAX_FILTERS_PER_STAGE' (are the arguments shifted?)" >&2
+    exit 1
+fi
 if [[ -n "$MAX_FILTERS_PER_STAGE" ]]; then
     PARDB_EXTRA_ARGS+=("--max-filters-per-stage=$MAX_FILTERS_PER_STAGE")
 fi

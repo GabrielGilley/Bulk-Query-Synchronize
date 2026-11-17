@@ -22,9 +22,10 @@ node=$(echo $SLURM_JOB_NODELIST | cut -d '-' -f1 - | cut -d ',' -f1 - | tr -d '[
 ip=$(host "$node.100g" | awk '{print $4}')
 PANDO_MESH_ENTRY="$ip,0"
 
-SCRIPT_PATH=$(scontrol show job $SLURM_JOBID | awk -F= '/Command=/{print $2}')
-SCRIPT_DIR=$(dirname $SCRIPT_PATH)
-PANDO_PARDB_BIN=$SCRIPT_DIR/../../src/sifs/pando_pardb.sif
+# Command= also lists the script's arguments; keep only the script path
+SCRIPT_PATH=$(scontrol show job "$SLURM_JOBID" | awk -F= '/Command=/{print $2}' | awk '{print $1}')
+SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
+PANDO_PARDB_BIN="$SCRIPT_DIR/../../src/sifs/pando_pardb.sif"
 
 PANDO_BIND_IP_FILE=/opt/installer/ip
 echo REMOVING FILES
@@ -50,7 +51,7 @@ echo $PANDO_MESH_ENTRY
 echo $PANDO_PARDB_BIN
 echo $PANDO_BIND_IP_FILE
 echo "MAX_FILTERS_PER_STAGE=${MAX_FILTERS_PER_STAGE:-default}"
-srun --unbuffered bash pardb.internal $PANDO_MESH_ENTRY $PANDO_PARDB_BIN $PANDO_BIND_IP_FILE "$MAX_FILTERS_PER_STAGE"
+srun --unbuffered bash pardb.internal "$PANDO_MESH_ENTRY" "$PANDO_PARDB_BIN" "$PANDO_BIND_IP_FILE" "$MAX_FILTERS_PER_STAGE"
 
 echo FINISH
 date
