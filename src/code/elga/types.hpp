@@ -106,6 +106,9 @@ using it_t = int32_t;
 #define ALG_INTERNAL_COMPUTE      0xcf
 #define ALG_VERTICES              0xd0
 #define GET_STATE                 0xd1
+/* 0xd2, 0xd3: used by upstream Pando (EXPORT_DB_WITH_TAG*) */
+#define GET_ENTRIES_BY_KEYS       0xd4
+#define MAP_RETRIEVE_VALUES       0xd5
 #define WANT_HEARTBEAT            0xfe
 #define HEARTBEAT                 0xff
 

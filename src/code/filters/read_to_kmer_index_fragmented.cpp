@@ -235,12 +235,24 @@ void read_kmer_index_frag(const DBAccess *access, const char* filter_fail_tag, c
     // All counts are checked before anything is written, so a read whose counts
     // are missing or unreadable (the count phase did not run correctly) fails
     // without leaving a partial set of postings in the index.
+    //
+    // Every count is fetched with one batched lookup (check_kmer_counts), sent
+    // to all the agents that own them at once, instead of one blocking request
+    // per k-mer. Results are checked in the same order as before, so the first
+    // missing or unreadable count produces the same error.
+    vector<uint64_t> read_kmers;
+    read_kmers.reserve(kmer_fragments.size());
+    for (const auto& pair : kmer_fragments)
+        read_kmers.push_back(pair.first);
+
+    vector<KmerCountStatus> statuses = check_kmer_counts(access, read_kmers);
+
     unordered_set<uint64_t> kmers_to_index;
     kmers_to_index.reserve(kmer_fragments.size());
 
-    for (const auto& pair : kmer_fragments)
+    for (size_t k = 0; k < read_kmers.size(); ++k)
     {
-        KmerCountStatus status = check_kmer_count(access, pair.first);
+        KmerCountStatus status = statuses[k];
 
         if (status == KmerCountStatus::MISSING || status == KmerCountStatus::INVALID)
         {
@@ -254,7 +266,7 @@ void read_kmer_index_frag(const DBAccess *access, const char* filter_fail_tag, c
         }
 
         if (status == KmerCountStatus::IN_RANGE)
-            kmers_to_index.insert(pair.first);
+            kmers_to_index.insert(read_kmers[k]);
     }
 
     for (auto& pair : kmer_fragments)

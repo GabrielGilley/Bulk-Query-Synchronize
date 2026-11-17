@@ -160,11 +160,32 @@ inline dbkey_t make_kmer_count_key(uint64_t encoded_kmer) { return make_kmer_key
 
 enum class KmerCountStatus { IN_RANGE, OUT_OF_RANGE, MISSING, INVALID };
 
+/** @brief Classify a k-mer count entry's value against the cutoffs
+ *
+ * value is the entry's value, or nullptr if there is no entry. An empty value
+ * counts as MISSING, as get_entry_by_key reports it, so the single and batched
+ * lookups below classify every value the same way.
+ */
+inline KmerCountStatus classify_kmer_count(const char* value, double min_count, double max_count)
+{
+    if (value == nullptr || value[0] == '\0')
+        return KmerCountStatus::MISSING;
+
+    char* end = nullptr;
+    double count = strtod(value, &end);
+    if (end == value || *end != '\0')
+        return KmerCountStatus::INVALID;
+
+    return (count >= min_count && count <= max_count) ? KmerCountStatus::IN_RANGE : KmerCountStatus::OUT_OF_RANGE;
+}
+
 /** @brief Look up a canonical k-mer's count and check it against the cutoffs
  *
  * MISSING means no count entry exists (the count phase did not run or did not
  * cover this read); INVALID means the stored value is not a single number
  * (e.g. counts were concatenated instead of summed).
+ *
+ * One blocking request per call; to check many k-mers, use check_kmer_counts.
  */
 inline KmerCountStatus check_kmer_count(const DBAccess* access, uint64_t encoded_kmer,
                                         double min_count = KMER_COUNT_MIN, double max_count = KMER_COUNT_MAX)
@@ -172,18 +193,36 @@ inline KmerCountStatus check_kmer_count(const DBAccess* access, uint64_t encoded
     char* value = nullptr;
     access->get_entry_by_key.run(&access->get_entry_by_key, make_kmer_count_key(encoded_kmer), &value);
 
-    if (value == nullptr)
-        return KmerCountStatus::MISSING;
-
-    char* end = nullptr;
-    double count = strtod(value, &end);
-    bool valid = end != value && *end == '\0';
+    KmerCountStatus status = classify_kmer_count(value, min_count, max_count);
     free(value);
+    return status;
+}
 
-    if (!valid)
-        return KmerCountStatus::INVALID;
+/** @brief Look up many canonical k-mers' counts with one batched request
+ *
+ * Same results as calling check_kmer_count for each k-mer, in the same order,
+ * but every count is fetched in one get_entries_by_keys call, sent to all the
+ * agents that own them at once.
+ */
+inline vector<KmerCountStatus> check_kmer_counts(const DBAccess* access, const vector<uint64_t>& encoded_kmers,
+                                                 double min_count = KMER_COUNT_MIN, double max_count = KMER_COUNT_MAX)
+{
+    vector<dbkey_t> keys;
+    keys.reserve(encoded_kmers.size());
+    for (uint64_t kmer : encoded_kmers)
+        keys.push_back(make_kmer_count_key(kmer));
 
-    return (count >= min_count && count <= max_count) ? KmerCountStatus::IN_RANGE : KmerCountStatus::OUT_OF_RANGE;
+    vector<char*> values(keys.size(), nullptr);
+    if (!keys.empty())
+        access->get_entries_by_keys.run(&access->get_entries_by_keys, keys.size(), keys.data(), values.data());
+
+    vector<KmerCountStatus> statuses;
+    statuses.reserve(values.size());
+    for (char* value : values) {
+        statuses.push_back(classify_kmer_count(value, min_count, max_count));
+        free(value);
+    }
+    return statuses;
 }
 inline dbkey_t make_kmer_inv_index_key(uint64_t encoded_kmer) { return make_kmer_key(KMER_INV_INDEX, encoded_kmer); }
 
