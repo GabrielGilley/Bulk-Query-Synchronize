@@ -831,6 +831,9 @@ class SeqDB {
             installed_filters_[filter_name] = filter;
             // New filters may apply to entries behind the cursor
             reset_scan_();
+            // Register it with the stats now so that it is reported (e.g.,
+            // shown by pando_top) before any processing has happened
+            stats_.filter(filter_name, filter->filter_type() == GROUP_ENTRIES ? PASS_GROUP : PASS_SINGLE);
         }
 
         /** @brief Set how many filter runs one processing pass may do
