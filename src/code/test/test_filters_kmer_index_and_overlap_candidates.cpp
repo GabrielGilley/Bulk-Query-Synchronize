@@ -1,6 +1,10 @@
 #include <iostream>
 #include <string>
 #include <algorithm>
+#include <cmath>
+#include <map>
+#include <sstream>
+#include <vector>
 
 #include "seq_db.hpp"
 #include "test.hpp"
@@ -253,9 +257,94 @@ TEST(bad_read_missing_id_fails) {
     TEST_PASS
 }
 
+// A reproducible pseudo-random DNA sequence (no repeated 31-mers in practice)
+static string random_dna(size_t n, uint64_t seed) {
+    static const char bases[] = "ACGT";
+    string s;
+    s.reserve(n);
+    uint64_t x = seed;
+    for (size_t i = 0; i < n; ++i) {
+        x = x * 6364136223846793005ull + 1442695040888963407ull;
+        s += bases[(x >> 33) & 3];
+    }
+    return s;
+}
+
+static string reverse_complement(const string& s) {
+    string r(s.rbegin(), s.rend());
+    for (char& c : r)
+        c = (c == 'A') ? 'T' : (c == 'C') ? 'G' : (c == 'G') ? 'C' : 'A';
+    return r;
+}
+
+// The count -> index -> overlap_search pipeline, run phase by phase as
+// par-script.py does with BARRIERs. Reads 1 and 2 overlap by 200 bp, with read
+// 2 stored as the reverse complement; read 3 shares nothing with them.
+// overlap_search fetches all of a read's posting lists with one batched
+// get_entries_by_keys call.
+TEST(overlap_search_finds_overlaps) {
+    SeqDB db;
+
+    string genome = random_dna(600, 13);
+    string read1 = genome.substr(0, 400);                       // genome [0, 400)
+    string read2 = reverse_complement(genome.substr(200, 400)); // genome [200, 600), other strand
+    string read3 = random_dna(400, 99);
+
+    db.add_entry(make_read_entry("read1", read1, 1));
+    db.add_entry(make_read_entry("read2", read2, 2));
+    db.add_entry(make_read_entry("read3", read3, 3));
+
+    db.add_filter_dir(build_dir + "/filters");
+
+    db.install_filter("read_count_canonical_kmers");
+    db.process();
+    db.install_filter("read_kmer_index_frag");
+    db.process();
+    db.install_filter("overlap_search");
+    db.process();
+
+    // Candidate value: query,target,target_position,presence,relative_strand
+    map<string, vector<string>> candidates;  // by query read id
+    size_t searched = 0;
+    for (auto & [key, entry] : db.entries()) {
+        EQ(entry.has_tag("read_count_canonical_kmers:fail"), false);
+        EQ(entry.has_tag("read_kmer_index_frag:fail"), false);
+        EQ(entry.has_tag("overlap_search:fail"), false);
+
+        if (entry.has_tag("read") && entry.has_tag("overlap_search:done"))
+            ++searched;
+
+        if (entry.has_tag("candidate")) {
+            vector<string> fields;
+            stringstream ss(entry.value());
+            for (string f; getline(ss, f, ',');)
+                fields.push_back(f);
+            EQ(fields.size(), 5);
+            EQ(candidates.count(fields[0]), 0);   // at most one candidate per query
+            candidates[fields[0]] = fields;
+        }
+    }
+
+    EQ(searched, 3);
+    EQ(candidates.size(), 2);                    // read 3 overlaps nothing
+
+    // 170 of each read's 370 k-mers are shared: presence = 170/370 ~ 0.459
+    for (auto & [query, other] : vector<pair<string, string>>{{"1", "2"}, {"2", "1"}}) {
+        EQ(candidates.count(query), 1);
+        auto & f = candidates[query];
+        EQ(f[1], other);                         // target read
+        EQ(f[2], "0");                           // target fragment 0 (reads are shorter than FRAG)
+        EQ(fabs(stod(f[3]) - 170.0 / 370.0) < 1e-4, true);
+        EQ(f[4], "-");                           // opposite strands
+    }
+
+    TEST_PASS
+}
+
 TESTS_BEGIN
     elga::ZMQChatterbox::Setup();
     RUN_TEST(read_kmer_index_entries_created)
+    RUN_TEST(overlap_search_finds_overlaps)
     RUN_TEST(overlap_candidates_created_from_delta)
     RUN_TEST(short_read_gets_seq_but_no_delta_or_index)
     RUN_TEST(bad_read_missing_id_fails)

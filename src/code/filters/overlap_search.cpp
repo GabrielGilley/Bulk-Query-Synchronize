@@ -364,21 +364,35 @@ void overlap_search(const DBAccess *access, const char* filter_fail_tag, const c
         return true;
     };
 
+    // Every posting list is fetched with one batched lookup, sent to all the
+    // agents that own them at once, instead of one blocking request per k-mer.
+    // values[i] is a malloc'd copy of the posting list for unique_query_kmers[i],
+    // or nullptr if the k-mer is not in the index (an empty value gives "").
+    // Lists are processed in the same order as before, so the best hit (and
+    // how ties are broken) is unchanged.
+    vector<dbkey_t> kmer_keys;
+    kmer_keys.reserve(unique_query_kmers.size());
     for (const QueryKmer& query_kmer : unique_query_kmers)
+        kmer_keys.push_back(make_kmer_inv_index_key(query_kmer.encoded_kmer));
+
+    vector<char*> kmer_values(kmer_keys.size(), nullptr);
+
+    // Frees every fetched value on all paths, including the early returns below
+    struct FreeValues
     {
-        dbkey_t kmer_key = make_kmer_inv_index_key(query_kmer.encoded_kmer);
+        vector<char*>& values;
+        ~FreeValues() { for (char* v : values) free(v); }
+    } free_values {kmer_values};
 
-        char* kmer_ret = nullptr;
-        access->get_entry_by_key.run(&access->get_entry_by_key, kmer_key, &kmer_ret);
+    if (!kmer_keys.empty())
+        access->get_entries_by_keys.run(&access->get_entries_by_keys, kmer_keys.size(), kmer_keys.data(), kmer_values.data());
 
-        if (kmer_ret == nullptr)
+    for (size_t k = 0; k < unique_query_kmers.size(); ++k)
+    {
+        const char* kmer_ret = kmer_values[k];
+
+        if (kmer_ret == nullptr || kmer_ret[0] == '\0')
             continue;
-
-        if (kmer_ret[0] == '\0')
-        {
-            free(kmer_ret);
-            continue;
-        }
 
         const char* line_start = kmer_ret;
 
@@ -393,9 +407,8 @@ void overlap_search(const DBAccess *access, const char* filter_fail_tag, const c
 
                 if (line_len > 0)
                 {
-                    if (!process_index_value(line_start, line_len, query_kmer.multiplicity))
+                    if (!process_index_value(line_start, line_len, unique_query_kmers[k].multiplicity))
                     {
-                        free(kmer_ret);
                         access->add_tag.run(&access->add_tag, filter_fail_tag);
                         return;
                     }
@@ -407,8 +420,6 @@ void overlap_search(const DBAccess *access, const char* filter_fail_tag, const c
                 line_start = p + 1;
             }
         }
-
-        free(kmer_ret);
     }
 
     if (best_count == 0)
