@@ -1348,6 +1348,82 @@ TEST(single_sweep_offers_each_entry_once) {
     TEST_PASS
 }
 
+// Filter for the scan block tests: runs once on entries tagged "A" and
+// checks that the value it is given is the one stored for its key
+static size_t g_TEST_block_runs, g_TEST_block_bad_values;
+bool g_TEST_block_should_run(const DBAccess* acc) {
+    bool found_a = false;
+    for (auto tags = acc->tags; *tags[0] != '\0'; ++tags) {
+        if (string(*tags) == "A:done") return false;
+        if (string(*tags) == "A") found_a = true;
+    }
+    return found_a;
+}
+void g_TEST_block_run(void* access) {
+    const DBAccess* acc = (const DBAccess*)access;
+    ++g_TEST_block_runs;
+    if (acc->value == nullptr || string(acc->value) != "v" + to_string(acc->key.b)) ++g_TEST_block_bad_values;
+    acc->add_tag.run(&acc->add_tag, "A:done");
+}
+
+// The scan fetches entries in blocks (SeqDB::SCAN_BLOCK_KEYS keys per
+// request). Over several blocks, and with the filter limit stopping passes
+// part way through a block, every eligible entry still runs exactly once with
+// its own value, and a single sweep still offers each entry exactly once
+TEST(scan_in_blocks) {
+    FilterInterface f { filter_name: "TEST_block", filter_type: SINGLE_ENTRY,
+        should_run: &g_TEST_block_should_run, init: nullptr, destroy: nullptr, run: &g_TEST_block_run };
+    const size_t n = 10000;   // more than two blocks
+    size_t eligible = 0;
+    auto fill = [&](SeqDB& d) {
+        eligible = 0;
+        for (size_t k = 0; k < n; ++k) {
+            DBEntry<> e;
+            e.set_key({30, (vtx_t)k, 0});
+            e.add_tag(k % 3 == 0 ? "A" : "B");
+            e.value() = "v" + to_string(k);
+            if (k % 3 == 0) ++eligible;
+            d.add_entry(move(e));
+        }
+        d.install_filter(make_shared<Filter>(&f));
+    };
+
+    // Until done, no limit: one pass runs everything, a second finds nothing
+    {
+        g_TEST_block_runs = g_TEST_block_bad_values = 0;
+        SeqDB d;
+        fill(d);
+        d.process();
+        EQ(g_TEST_block_runs, eligible);
+        EQ(g_TEST_block_bad_values, 0);
+        EQ(d.entries_examined(), 2*n);
+    }
+    // Until done, 7 runs per pass: passes stop part way through blocks
+    {
+        g_TEST_block_runs = g_TEST_block_bad_values = 0;
+        SeqDB d;
+        fill(d);
+        d.set_max_filters_per_stage(7);
+        d.process();
+        EQ(g_TEST_block_runs, eligible);
+        EQ(g_TEST_block_bad_values, 0);
+    }
+    // One sweep, 7 runs per pass: every entry offered exactly once
+    {
+        g_TEST_block_runs = g_TEST_block_bad_values = 0;
+        SeqDB d;
+        d.set_single_sweep(true);
+        fill(d);
+        d.set_max_filters_per_stage(7);
+        d.process();
+        EQ(g_TEST_block_runs, eligible);
+        EQ(g_TEST_block_bad_values, 0);
+        EQ(d.entries_examined(), n);
+    }
+
+    TEST_PASS
+}
+
 TESTS_BEGIN
     elga::ZMQChatterbox::Setup();
 
@@ -1391,6 +1467,7 @@ TESTS_BEGIN
     RUN_TEST(cursor_scan_cost)
     RUN_TEST(single_sweep_leaves_follow_ups_for_next_request)
     RUN_TEST(single_sweep_offers_each_entry_once)
+    RUN_TEST(scan_in_blocks)
 
     elga::ZMQChatterbox::Teardown();
 TESTS_END

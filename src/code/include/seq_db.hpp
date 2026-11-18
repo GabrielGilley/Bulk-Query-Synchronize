@@ -217,6 +217,15 @@ class SeqDB {
          * later passes of the same request do nothing */
         bool sweep_done_ = false;
 
+        /** @brief The scan fetches entries from the map in blocks of this many
+         * keys, one request per block */
+        static constexpr size_t SCAN_BLOCK_KEYS = 4096;
+        /** @brief ...and a block's reply stops growing past about this many
+         * bytes, so databases with large values (e.g. whole blocks of a
+         * blockchain) do not get huge replies; the rest of the block is
+         * fetched with the next request */
+        static constexpr size_t SCAN_BLOCK_BYTES = 16u << 20;
+
         /** @brief Start the next pass on a fresh snapshot, freeing the old one */
         void reset_scan_() {
             vector<dbkey_t>().swap(scan_keys_);
@@ -314,11 +323,25 @@ class SeqDB {
                 stats_.keys_scanned = scan_pos_;
 
                 while (scan_pos_ < scan_keys_.size()) {
-                    dbkey_t key = scan_keys_[scan_pos_++];
-                    // The snapshot can be older than this pass; skip anything gone
-                    auto [entry, exists] = db_.retrieve_if_exists(key); //TODO also batch retrievals
+                  // Fetch the next block of entries with one request to the
+                  // map, instead of one request per key. The block is not kept
+                  // past this pass: a stage close can change any entry.
+                  size_t block_begin = scan_pos_;
+                  size_t block_keys = 0;
+                  vector<DBEntry<>> block = db_.retrieve_entries_by_keys(scan_keys_, block_begin,
+                      SCAN_BLOCK_KEYS, SCAN_BLOCK_BYTES, block_keys);
+                  size_t next_in_block = 0;
+
+                  for (size_t p = block_begin; p < block_begin + block_keys; ++p) {
+                    dbkey_t key = scan_keys_[p];
+                    scan_pos_ = p + 1;
+                    // The snapshot can be older than this pass; skip anything
+                    // gone (the block holds only the keys that still exist,
+                    // in key order)
+                    bool exists = next_in_block < block.size() && block[next_in_block].get_key() == key;
                     ++entries_examined_;
                     if (exists) {
+                        DBEntry<>& entry = block[next_in_block++];
                         #ifdef VERBOSE
                         if (++i % 10000 == 0) {
                             cerr << "I have processed " << i << " entries this pass (cursor at " << scan_pos_ << "/"
@@ -369,9 +392,11 @@ class SeqDB {
                              << scan_keys_.size() << ")" << endl;
                         #endif
                         // Keep the cursor; the next pass continues from here
+                        // (fetching the rest of this block again)
                         stats_.stopped_early = scan_pos_ < scan_keys_.size();
                         return true;
                     }
+                  }
                 }
 
                 // Reached the end of the snapshot
