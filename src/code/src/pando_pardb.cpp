@@ -31,8 +31,9 @@ void set_handler() {
 int main_(int argc, char **argv) {
     cerr << "[Pando] [INFO] Loading..." << endl;
 
-    if (argc < 2 || argc > 6) {
+    if (argc < 2 || argc > 7) {
         cerr << "Usage: pando_pardb bind-addr [seed-addr] [-M<mem in GB>] [--skip-group-filters] [--max-filters-per-stage=N]\n"
+            "                   [--write-batch-bytes=N]\n"
             "\n"
             "Parameters:\n"
             "  bind-addr : the address to bind this specific DB agent to\n"
@@ -41,6 +42,9 @@ int main_(int argc, char **argv) {
             "  --skip-group-filters : skip processing of group filters\n"
             "  --max-filters-per-stage=N : run at most N filters per processing pass before\n"
             "                              closing the stage (bounds memory; default 100000)\n"
+            "  --write-batch-bytes=N : while filters run, send each agent's writes in messages\n"
+            "                          of about N bytes instead of one message per write\n"
+            "                          (default 262144; 0 = one message per write)\n"
             "\n"
             "Addresses are of the form: IPv4-string,ID\n"
             "  IPv4-string : a period separated IP address, e.g., 1.2.3.4\n"
@@ -55,6 +59,8 @@ int main_(int argc, char **argv) {
     bool skip_group_filters = false;
     size_t max_filters_per_stage = 0;  // 0 = SeqDB default
     const string max_filters_flag = "--max-filters-per-stage=";
+    size_t write_batch_bytes = ParDB::DEFAULT_WRITE_BATCH_BYTES;
+    const string write_batch_flag = "--write-batch-bytes=";
     for (int idx = 2; idx < argc; ++idx) {
         if (argv[idx][0] == '-' && argv[idx][1] == 'M') {
             sz = (1ull<<30)*strtoul(&(argv[idx][2]), NULL, 10);
@@ -70,6 +76,16 @@ int main_(int argc, char **argv) {
                 return 1;
             }
             max_filters_per_stage = n;
+        } else if (std::string(argv[idx]).rfind(write_batch_flag, 0) == 0) {
+            const char* val = argv[idx] + write_batch_flag.size();
+            char* end = nullptr;
+            errno = 0;
+            unsigned long long n = strtoull(val, &end, 10);
+            if (*val == '\0' || *val == '-' || *end != '\0' || errno != 0) {
+                cerr << "[Pando] [ERROR] " << write_batch_flag << " needs a non-negative integer, got '" << val << "'" << endl;
+                return 1;
+            }
+            write_batch_bytes = n;
         } else {
             if (seed_addr.size() != 0) throw runtime_error("Multiple seed addrs given");
             seed_addr.assign(argv[idx]);
@@ -77,8 +93,9 @@ int main_(int argc, char **argv) {
     }
 
     cerr << "[Pando] [DEBUG] Bind addr=" << bind_addr.get_conn_str(bind_addr, REQUEST) << " memory=" << sz
-         << " max_filters_per_stage=" << (max_filters_per_stage ? to_string(max_filters_per_stage) : string("default")) << endl;
-    ParDBThread db { bind_addr, sz, skip_group_filters, max_filters_per_stage };
+         << " max_filters_per_stage=" << (max_filters_per_stage ? to_string(max_filters_per_stage) : string("default"))
+         << " write_batch_bytes=" << (write_batch_bytes ? to_string(write_batch_bytes) : string("off")) << endl;
+    ParDBThread db { bind_addr, sz, skip_group_filters, max_filters_per_stage, write_batch_bytes };
 
     if (argc > 2) {
         elga::ZMQAddress seed_addr = get_zmq_addr(argv[2]);

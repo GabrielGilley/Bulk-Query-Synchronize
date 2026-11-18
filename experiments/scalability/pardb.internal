@@ -3,6 +3,8 @@ PANDO_PARDB_BIN="$1"; shift
 PANDO_BIND_IP_FILE="$1"; shift
 # Optional: filter runs per processing pass (empty = pando_pardb default)
 MAX_FILTERS_PER_STAGE="${1:-}"
+# Optional: write batch flush size in bytes (empty = pando_pardb default, 0 = off)
+WRITE_BATCH_BYTES="${2:-}"
 
 PARDB_EXTRA_ARGS=()
 if [[ -n "$MAX_FILTERS_PER_STAGE" && ! "$MAX_FILTERS_PER_STAGE" =~ ^[1-9][0-9]*$ ]]; then
@@ -11,6 +13,13 @@ if [[ -n "$MAX_FILTERS_PER_STAGE" && ! "$MAX_FILTERS_PER_STAGE" =~ ^[1-9][0-9]*$
 fi
 if [[ -n "$MAX_FILTERS_PER_STAGE" ]]; then
     PARDB_EXTRA_ARGS+=("--max-filters-per-stage=$MAX_FILTERS_PER_STAGE")
+fi
+if [[ -n "$WRITE_BATCH_BYTES" && ! "$WRITE_BATCH_BYTES" =~ ^[0-9]+$ ]]; then
+    echo "pardb.internal: write batch bytes must be a non-negative integer, got '$WRITE_BATCH_BYTES' (are the arguments shifted?)" >&2
+    exit 1
+fi
+if [[ -n "$WRITE_BATCH_BYTES" ]]; then
+    PARDB_EXTRA_ARGS+=("--write-batch-bytes=$WRITE_BATCH_BYTES")
 fi
 
 echo ">>starting pardb"

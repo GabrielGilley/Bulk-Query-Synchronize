@@ -18,6 +18,8 @@ NODE_COUNT=8
 # Filter runs per processing pass before the stage closes (bounds memory).
 # Empty = pando_pardb default (100000).
 MAX_FILTERS_PER_STAGE=5000
+# Write batch flush size in bytes per destination agent (empty = pando_pardb default of 262144, 0 = off)
+WRITE_BATCH_BYTES=
 
 mkdir -p "$RESULTS_DIR"
 touch "$RESULTS_DIR/$TEST_NAME.csv"
@@ -45,7 +47,7 @@ fi
 
 
 # Submit batch job
-SLURM_OUTPUT=$(sbatch -N "$NODE_COUNT" --mem 360000 pardb.sbatch "$MAX_FILTERS_PER_STAGE")
+SLURM_OUTPUT=$(sbatch -N "$NODE_COUNT" --mem 360000 pardb.sbatch "$MAX_FILTERS_PER_STAGE" "$WRITE_BATCH_BYTES")
 JOB_ID=$(echo "$SLURM_OUTPUT" | awk '{print $4}')
 echo "Batch job submitted with $NODE_COUNT nodes. Job ID: $JOB_ID"
 
@@ -67,7 +69,7 @@ export PANDO_PHASE_FILE="$MEMMON_DIR/phases.log"
 echo "Memory monitor: $MEMMON_DIR (analyze: python3 memmon/analyze_memmon.py $MEMMON_DIR)"
 
 echo "Beginning Experiment..."
-echo "Params: $TEST_NAME $MESH $FILTERS $DATA_DIR $RESULTS_DIR max_filters_per_stage=${MAX_FILTERS_PER_STAGE:-default}"
+echo "Params: $TEST_NAME $MESH $FILTERS $DATA_DIR $RESULTS_DIR max_filters_per_stage=${MAX_FILTERS_PER_STAGE:-default} write_batch_bytes=${WRITE_BATCH_BYTES:-default}"
 # singularity run -B /cscratch -B /scratch ./../../src/sifs/pando_python.sif python3 dagify-script.py -n $TEST_NAME -m $MESH -f $FILTERS -d $DATA_DIR -r $RESULTS_DIR
 singularity run -B /cscratch -B /scratch ./../../src/sifs/pando_python.sif python3 par-script.py -n $TEST_NAME -m $MESH -f $FILTERS -d $DATA_DIR -r $RESULTS_DIR
 
