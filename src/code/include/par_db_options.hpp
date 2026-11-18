@@ -2,6 +2,8 @@
 
 #include <cstddef>
 
+#include "memory_policy.hpp"
+
 namespace pando {
 
 /** @brief Settings for a ParDB agent (see pando_pardb's command line)
@@ -29,6 +31,12 @@ struct ParDBOptions {
     /** @brief Keys the filter scan fetches from the map per request (see
      * SeqDB::set_scan_block_keys); 0 = SeqDB's default */
     size_t scan_block_keys = 0;
+
+    /** @brief When to end a processing pass early to bound memory (see
+     * memory_policy.hpp); enabled by default, MemoryPolicy::disabled() turns
+     * it off. Requests from other agents to close early are honored either
+     * way, once a filter has run in the pass. */
+    MemoryPolicy mem_policy;
 };
 
 }

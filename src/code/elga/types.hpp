@@ -110,12 +110,17 @@ using it_t = int32_t;
 #define MAP_GET_TAGS_BY_KEYS      0xd4
 #define PROGRESS                  0xd5
 #define STAGE_EVENT               0xd6
-#define GET_ENTRIES_BY_KEYS       0xd7
-#define MAP_RETRIEVE_VALUES       0xd8
+/** An agent asks every agent to end the current processing pass early so the
+ * stage can close and staged memory is freed. Only received on the dedicated
+ * control subscription (ZMQChatterbox::ctrl_sub), never by the main loop.
+ * (Upstream Pando's code; BQS's own codes follow it.) */
+#define CLOSE_EARLY               0xd7
+#define GET_ENTRIES_BY_KEYS       0xd8
+#define MAP_RETRIEVE_VALUES       0xd9
 /* Several writes (new entries, tag adds/removes, value updates,
  * subscriptions) to one agent in one message; see ParDB::recv_write_batch */
-#define WRITE_BATCH               0xd9
-#define MAP_GET_ENTRIES_BY_KEYS   0xda
+#define WRITE_BATCH               0xda
+#define MAP_GET_ENTRIES_BY_KEYS   0xdb
 #define WANT_HEARTBEAT            0xfe
 #define HEARTBEAT                 0xff
 

@@ -127,6 +127,59 @@ class ParDB : public PandoParticipant {
         std::atomic<uint64_t> write_batches_sent_ {0};
         std::atomic<uint64_t> writes_batched_ {0};
 
+        /** @brief Highest pass any other agent asked to close early (see
+         * CLOSE_EARLY); 0 if none. Requests can arrive before this agent
+         * starts that pass, so they are remembered rather than matched as
+         * they are received. */
+        uint64_t close_early_pass_ = 0;
+        /** @brief Last pass this agent asked everyone to close early, so it
+         * asks at most once per pass */
+        uint64_t close_early_sent_pass_ = 0;
+
+        /** @brief Slurm's tasks per node (read at startup); 0 if not under
+         * Slurm or not known */
+        uint64_t slurm_tasks_per_node_ = 0;
+        /** @brief Last agents-per-node answer, to log when it changes */
+        uint64_t logged_agents_per_node_ = 0;
+
+        /** @brief The agents sharing this node's memory, for the memory
+         * budget: Slurm's tasks per node if known, else the agents in the
+         * mesh with our IP address (at least ourselves) */
+        uint64_t agents_on_node_() {
+            uint64_t n = slurm_tasks_per_node_;
+            const char* from = "slurm";
+            if (n == 0) {
+                n = count_agents_sharing_ip(agents(), addr_ser_);
+                from = "mesh";
+            }
+            if (n == 0) n = 1;
+            if (n != logged_agents_per_node_) {
+                logged_agents_per_node_ = n;
+                cerr << "[Pando] [INFO] memory budget is shared by " << n << " agent(s) on this node (from "
+                     << from << ")" << endl;
+            }
+            return n;
+        }
+
+        static ParDBOptions basic_options_(bool skip_group_filters, size_t max_filters_per_stage,
+                                           size_t write_batch_bytes, bool single_sweep) {
+            ParDBOptions opts;
+            opts.skip_group_filters = skip_group_filters;
+            opts.max_filters_per_stage = max_filters_per_stage;
+            opts.write_batch_bytes = write_batch_bytes;
+            opts.single_sweep = single_sweep;
+            return opts;
+        }
+
+        static ParDBOptions options_with_policy_(bool skip_group_filters, size_t max_filters_per_stage,
+                                                 const MemoryPolicy& mem_policy) {
+            ParDBOptions opts;
+            opts.skip_group_filters = skip_group_filters;
+            opts.max_filters_per_stage = max_filters_per_stage;
+            opts.mem_policy = mem_policy;
+            return opts;
+        }
+
     public:
         /** @brief Default flush size for write batches */
         static constexpr size_t DEFAULT_WRITE_BATCH_BYTES = ParDBOptions::DEFAULT_WRITE_BATCH_BYTES;
@@ -143,7 +196,20 @@ class ParDB : public PandoParticipant {
          */
         ParDB(ZMQAddress addr, size_t sz, bool skip_group_filters=false, size_t max_filters_per_stage=0,
               size_t write_batch_bytes=DEFAULT_WRITE_BATCH_BYTES, bool single_sweep=false) :
-                ParDB(addr, sz, ParDBOptions{skip_group_filters, max_filters_per_stage, write_batch_bytes, single_sweep}) { }
+                ParDB(addr, sz, basic_options_(skip_group_filters, max_filters_per_stage, write_batch_bytes, single_sweep)) { }
+
+        /** @brief Initialize the parallel DB with a memory policy
+         *
+         * @param mem_policy when to end a pass early to bound memory (see
+         *        memory_policy.hpp); enabled by default, MemoryPolicy::disabled()
+         *        turns it off. Requests from other agents to close early are
+         *        honored either way, once a filter has run in the pass. An
+         *        agents_per_node of 0 uses Slurm's tasks per node, else the
+         *        agents in the mesh with this agent's IP address.
+         */
+        ParDB(ZMQAddress addr, size_t sz, bool skip_group_filters, size_t max_filters_per_stage,
+              const MemoryPolicy& mem_policy) :
+                ParDB(addr, sz, options_with_policy_(skip_group_filters, max_filters_per_stage, mem_policy)) { }
 
         /** @brief Initialize the parallel DB with the given settings */
         ParDB(ZMQAddress addr, size_t sz, const ParDBOptions& opts) :
@@ -178,10 +244,20 @@ class ParDB : public PandoParticipant {
             if (opts.max_filters_per_stage != 0) db_.set_max_filters_per_stage(opts.max_filters_per_stage);
             db_.set_single_sweep(opts.single_sweep);
             if (opts.scan_block_keys != 0) db_.set_scan_block_keys(opts.scan_block_keys);
+            db_.set_memory_policy(opts.mem_policy);
+            slurm_tasks_per_node_ = slurm_tasks_per_node();
+            db_.set_agents_per_node_source([this]() { return agents_on_node_(); });
 
             // The message loop does not run while filters run, so publish
             // progress from inside the filter loops instead
             db_.set_progress_callback([this]() { publish_progress(); });
+
+            // Likewise, requests to close early are checked from inside the
+            // filter loop. They arrive on the control subscription, which the
+            // message loop does not read, so checking cannot take any other
+            // message off the main subscription.
+            ctrl_sub(CLOSE_EARLY);
+            db_.set_stop_requested_callback([this]() { return close_early_requested_(); });
         }
         ParDB(ZMQAddress addr) : ParDB(addr, 2ull*(1ull<<29)) { }
 
@@ -200,6 +276,53 @@ class ParDB : public PandoParticipant {
             pub(msg, msg_size);
 
             publish_progress();
+
+            // Done with our filters and waiting on the rest of the mesh, whose
+            // output keeps arriving here until the stage closes: if memory is
+            // over the limit now, ask everyone to stop
+            if (state_ == STAGE_PROCESSED && db_.under_memory_pressure())
+                publish_close_early_(STOP_MEM_PRESSURE);
+        }
+
+        /** @brief Ask every agent to end the current pass early (once per pass) */
+        void publish_close_early_(uint8_t reason) {
+            uint64_t pass = db_.stats().pass;
+            if (pass == 0 || close_early_sent_pass_ == pass) return;
+            close_early_sent_pass_ = pass;
+
+            #ifdef VERBOSE
+            cerr << "[Pando] asking all agents to close pass " << pass << " early (" << stop_reason_name(reason) << ")" << endl;
+            #endif
+            CloseEarlyRequest req;
+            req.agent = addr_ser_;
+            req.pass = pass;
+            req.reason = reason;
+            StatsWriter w { CLOSE_EARLY };
+            req.serialize(w);
+            pub(w.data(), w.size());
+        }
+
+        /** @brief Read any CLOSE_EARLY requests and return whether one is
+         * for the current pass
+         *
+         * Every agent advances ProcessStats::pass on the same PROCESS and
+         * ALGPROCESS broadcasts, so pass numbers agree across the mesh. (An
+         * agent that joins after processing has started can disagree; at
+         * worst it then ignores a request or stops one pass early, both of
+         * which are safe.)
+         */
+        bool close_early_requested_() {
+            drain_ctrl([this](const char* data, const char* end) {
+                msg_type_t type = unpack_msg(data);
+                if (type != CLOSE_EARLY) return;
+                CloseEarlyRequest req;
+                if (!req.deserialize(data, end)) return;
+                // Publications reach our own subscription too
+                if (req.agent == addr_ser_) return;
+                close_early_pass_ = max(close_early_pass_, req.pass);
+            });
+            uint64_t pass = db_.stats().pass;
+            return pass != 0 && close_early_pass_ == pass;
         }
 
         /** @brief Publish a PROGRESS message describing our processing */
@@ -1164,6 +1287,13 @@ class ParDB : public PandoParticipant {
             cerr << "finished process filters" << endl;
             #endif
 
+            // We stopped to bound memory, but the other agents' output keeps
+            // arriving here until every agent stops and the stage closes, so
+            // ask them to stop too (first, so they stop as soon as possible)
+            uint8_t reason = db_.stats().stop_reason;
+            if (reason == STOP_MEM_BUDGET || reason == STOP_MEM_PRESSURE)
+                publish_close_early_(reason);
+
             // Everything sent during the pass must be out before the barrier
             // counts what was sent
             flush_all_write_batches_();
@@ -1201,6 +1331,10 @@ class ParDB : public PandoParticipant {
 
             // Now all agents have closed their stages, so the pass is over
             end_pass_();
+
+            // Every staged change has been applied and freed; give that memory
+            // back so the next pass's budget sees it
+            db_.release_free_memory();
 
             // We can start the loop again
             if (local_process_again_) {
