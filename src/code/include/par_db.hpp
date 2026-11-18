@@ -137,9 +137,11 @@ class ParDB : public PandoParticipant {
          *        SeqDB::set_max_filters_per_stage); 0 keeps the default
          * @param write_batch_bytes flush size for write batches (see
          *        set_write_batch_bytes); 0 turns batching off
+         * @param single_sweep if true, each process request makes one sweep
+         *        over the entries and stops (see SeqDB::set_single_sweep)
          */
         ParDB(ZMQAddress addr, size_t sz, bool skip_group_filters=false, size_t max_filters_per_stage=0,
-              size_t write_batch_bytes=DEFAULT_WRITE_BATCH_BYTES) :
+              size_t write_batch_bytes=DEFAULT_WRITE_BATCH_BYTES, bool single_sweep=false) :
                 PandoParticipant(addr, true),
                 db_refs_(this,
                     s_ref_add_entry,
@@ -169,6 +171,7 @@ class ParDB : public PandoParticipant {
 
             if (skip_group_filters_) db_.disable_group_filters();
             if (max_filters_per_stage != 0) db_.set_max_filters_per_stage(max_filters_per_stage);
+            db_.set_single_sweep(single_sweep);
 
             // The message loop does not run while filters run, so publish
             // progress from inside the filter loops instead
@@ -334,6 +337,15 @@ class ParDB : public PandoParticipant {
 
         /** @brief Return the flush size for write batches (0 = off) */
         size_t write_batch_bytes() const { return write_batch_bytes_; }
+
+        /** @brief Whether each process request makes a single sweep */
+        bool single_sweep() const { return db_.single_sweep(); }
+
+        /** @brief Processing passes this agent has started (for tests) */
+        uint64_t passes_started() const { return db_.stats().pass; }
+
+        /** @brief Entries this agent has offered to its filters (for tests) */
+        size_t entries_examined() const { return db_.entries_examined(); }
 
         /** @brief WRITE_BATCH messages this agent has sent */
         uint64_t write_batches_sent() const { return write_batches_sent_.load(); }
@@ -1196,7 +1208,7 @@ class ParDB : public PandoParticipant {
                 if (synchronizer_process_again_) {
                     synchronizer_process_again_ = false;
                     has_alg_processed_ = false;
-                    broadcast_process();
+                    broadcast_process(false);
                 } else {
                     // move everyone into the alg db process
                     // Filter installs are broadcast to every agent, so the
@@ -1307,13 +1319,23 @@ class ParDB : public PandoParticipant {
             else throw runtime_error("End barrier at unknown stage");
         }
 
-        void broadcast_process() {
-            msg_type_t msg = PROCESS;
-            pub((char*)&msg, sizeof(msg));
+        /** @brief Start a processing pass on every agent (and self)
+         *
+         * @param new_request true for the first pass of a process request
+         *        from a client, false for another pass the synchronizer
+         *        starts to continue the same request. Each request starts a
+         *        new sweep over the entries (see SeqDB::start_new_sweep).
+         */
+        void broadcast_process(bool new_request) {
+            char msg[sizeof(msg_type_t) + sizeof(uint8_t)];
+            char* msg_ptr = msg;
+            pack_msg(msg_ptr, PROCESS);
+            pack_single(msg_ptr, (uint8_t)(new_request ? 1 : 0));
+            pub(msg, sizeof(msg));
 
             //also send to self
             auto req = get_req(addr_.serialize());
-            req->send(PROCESS);
+            req->send(msg, sizeof(msg));
         }
 
         void broadcast_algprocess() {
@@ -1333,7 +1355,7 @@ class ParDB : public PandoParticipant {
             // where that returns false, but really we're already processing)
             set_state_(STAGE_BEGIN);
 
-            broadcast_process();
+            broadcast_process(true);
 
             // If necessary, respond with an acknowledgement
             if (ZMQRequester::is_reqrep_sock(sock))
@@ -1341,8 +1363,23 @@ class ParDB : public PandoParticipant {
         }
 
         /** @brief Call process on the internal DB */
-        void recv_process(zmq_socket_t sock, [[maybe_unused]] const char* data, [[maybe_unused]] const char* end) {
+        void recv_process(zmq_socket_t sock, const char* data, const char* end) {
             has_alg_processed_ = false;
+
+            // The first pass of a client's request starts a new sweep. (A
+            // PROCESS without the flag byte is treated as a new request.)
+            bool new_request = (data == end) || (*data != 0);
+            if (new_request) db_.start_new_sweep();
+
+            // What this agent reports before its filters run: whether the last
+            // stage close left changes staged. Applying an entry at a close
+            // can release a subscription, and the release (a tag removal) is
+            // only staged then, to be applied at this pass's close; the entry
+            // it makes eligible needs one more pass after that. Otherwise
+            // nothing is staged now, and the report must not repeat the last
+            // pass's answer: that made every request end with two passes that
+            // ran no filter instead of one.
+            local_process_again_ = db_.has_staged_changes();
 
             // First, enter STAGE_BEGIN
             db_.stats().begin_pass(PASS_SINGLE);

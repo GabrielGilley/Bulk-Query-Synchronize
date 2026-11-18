@@ -31,9 +31,9 @@ void set_handler() {
 int main_(int argc, char **argv) {
     cerr << "[Pando] [INFO] Loading..." << endl;
 
-    if (argc < 2 || argc > 7) {
+    if (argc < 2 || argc > 8) {
         cerr << "Usage: pando_pardb bind-addr [seed-addr] [-M<mem in GB>] [--skip-group-filters] [--max-filters-per-stage=N]\n"
-            "                   [--write-batch-bytes=N]\n"
+            "                   [--write-batch-bytes=N] [--sweep=until-done|once]\n"
             "\n"
             "Parameters:\n"
             "  bind-addr : the address to bind this specific DB agent to\n"
@@ -45,6 +45,13 @@ int main_(int argc, char **argv) {
             "  --write-batch-bytes=N : while filters run, send each agent's writes in messages\n"
             "                          of about N bytes instead of one message per write\n"
             "                          (default 262144; 0 = one message per write)\n"
+            "  --sweep=until-done|once : how a process request ends. until-done (default):\n"
+            "                          sweep over the entries until a whole sweep runs no\n"
+            "                          filter. once: sweep over the entries once and stop;\n"
+            "                          entries created or made eligible during the sweep are\n"
+            "                          left for the next request. Use once only if no filter's\n"
+            "                          writes can make an entry eligible for a filter in the\n"
+            "                          same request.\n"
             "\n"
             "Addresses are of the form: IPv4-string,ID\n"
             "  IPv4-string : a period separated IP address, e.g., 1.2.3.4\n"
@@ -61,6 +68,8 @@ int main_(int argc, char **argv) {
     const string max_filters_flag = "--max-filters-per-stage=";
     size_t write_batch_bytes = ParDB::DEFAULT_WRITE_BATCH_BYTES;
     const string write_batch_flag = "--write-batch-bytes=";
+    bool single_sweep = false;
+    const string sweep_flag = "--sweep=";
     for (int idx = 2; idx < argc; ++idx) {
         if (argv[idx][0] == '-' && argv[idx][1] == 'M') {
             sz = (1ull<<30)*strtoul(&(argv[idx][2]), NULL, 10);
@@ -86,6 +95,14 @@ int main_(int argc, char **argv) {
                 return 1;
             }
             write_batch_bytes = n;
+        } else if (std::string(argv[idx]).rfind(sweep_flag, 0) == 0) {
+            string val = argv[idx] + sweep_flag.size();
+            if (val == "once") single_sweep = true;
+            else if (val == "until-done") single_sweep = false;
+            else {
+                cerr << "[Pando] [ERROR] " << sweep_flag << " must be until-done or once, got '" << val << "'" << endl;
+                return 1;
+            }
         } else {
             if (seed_addr.size() != 0) throw runtime_error("Multiple seed addrs given");
             seed_addr.assign(argv[idx]);
@@ -94,8 +111,9 @@ int main_(int argc, char **argv) {
 
     cerr << "[Pando] [DEBUG] Bind addr=" << bind_addr.get_conn_str(bind_addr, REQUEST) << " memory=" << sz
          << " max_filters_per_stage=" << (max_filters_per_stage ? to_string(max_filters_per_stage) : string("default"))
-         << " write_batch_bytes=" << (write_batch_bytes ? to_string(write_batch_bytes) : string("off")) << endl;
-    ParDBThread db { bind_addr, sz, skip_group_filters, max_filters_per_stage, write_batch_bytes };
+         << " write_batch_bytes=" << (write_batch_bytes ? to_string(write_batch_bytes) : string("off"))
+         << " sweep=" << (single_sweep ? "once" : "until-done") << endl;
+    ParDBThread db { bind_addr, sz, skip_group_filters, max_filters_per_stage, write_batch_bytes, single_sweep };
 
     if (argc > 2) {
         elga::ZMQAddress seed_addr = get_zmq_addr(argv[2]);

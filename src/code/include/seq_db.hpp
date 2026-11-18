@@ -208,6 +208,15 @@ class SeqDB {
         /** @brief Total entries offered to the filters (for tests/diagnostics) */
         size_t entries_examined_ = 0;
 
+        /** @brief Sweep mode (see set_single_sweep): when set, each process
+         * request makes one sweep over the entries and stops, instead of
+         * sweeping again until a sweep runs no filter */
+        bool single_sweep_ = false;
+
+        /** @brief In single-sweep mode, the current request's sweep is finished:
+         * later passes of the same request do nothing */
+        bool sweep_done_ = false;
+
         /** @brief Start the next pass on a fresh snapshot, freeing the old one */
         void reset_scan_() {
             vector<dbkey_t>().swap(scan_keys_);
@@ -282,6 +291,13 @@ class SeqDB {
             size_t i = 0;   // entries this pass
             #endif
 
+            // In single-sweep mode, an agent whose sweep is finished does nothing
+            // while the rest of the mesh finishes theirs
+            if (single_sweep_ && sweep_done_) {
+                stats_.stopped_early = false;
+                return false;
+            }
+
             // Start a new lap on a fresh snapshot if the last one finished
             if (scan_pos_ == 0 || scan_pos_ >= scan_keys_.size()) {
                 scan_keys_ = db_.keys();
@@ -341,6 +357,13 @@ class SeqDB {
                     report_progress_if_due_();
 
                     if (num_filters_run >= max_filters_per_stage_) {
+                        if (single_sweep_ && scan_pos_ >= scan_keys_.size()) {
+                            // The limit was reached on the last entry of the
+                            // snapshot: the sweep is done, as below
+                            sweep_done_ = true;
+                            reset_scan_();
+                            return false;
+                        }
                         #ifdef VERBOSE
                         cerr << "breaking early due to max filter run limit (cursor at " << scan_pos_ << "/"
                              << scan_keys_.size() << ")" << endl;
@@ -352,6 +375,15 @@ class SeqDB {
                 }
 
                 // Reached the end of the snapshot
+                if (single_sweep_) {
+                    // Every entry in the snapshot has been offered to the
+                    // filters once: the sweep is done, even if filters ran.
+                    // Nothing is rechecked, so entries created or made
+                    // eligible during the sweep wait for the next request.
+                    sweep_done_ = true;
+                    reset_scan_();
+                    return false;
+                }
                 if (filter_ran) {
                     // Next pass starts a new lap, which will see this pass's changes
                     reset_scan_();
@@ -900,8 +932,42 @@ class SeqDB {
 
         /** @brief Process the database, applying filters as appropriate */
         virtual bool process() {
+            start_new_sweep();
             while (process_once()) {}
             return false;
+        }
+
+        /** @brief Choose how a process request ends
+         *
+         * Off (the default): sweep over the entries, and keep sweeping until
+         * a whole sweep runs no filter. A filter that makes another entry
+         * eligible (by creating or tagging it) is therefore always followed
+         * up, at the cost of one more sweep after the last one that ran
+         * anything.
+         *
+         * On: make one sweep and stop. Every entry that existed when the
+         * sweep started is offered to the filters once (over as many passes
+         * as max_filters_per_stage needs); nothing is rechecked. Use this only
+         * when no filter's writes can make an entry eligible for a filter in
+         * the same request. Entries created or made eligible during the sweep
+         * are left for the next request.
+         */
+        void set_single_sweep(bool on) { single_sweep_ = on; }
+
+        /** @brief Whether each process request makes a single sweep */
+        bool single_sweep() const { return single_sweep_; }
+
+        /** @brief Whether changes are staged, waiting for a stage close */
+        bool has_staged_changes() const {
+            return !new_entries_.empty() || !val_updates_.empty() ||
+                   !tags_to_add_.empty() || !tags_to_remove_.empty();
+        }
+
+        /** @brief Begin a new process request: its sweep starts from the first
+         * entry of a fresh snapshot */
+        void start_new_sweep() {
+            sweep_done_ = false;
+            reset_scan_();
         }
 
         /** @brief Return the current size of the database */

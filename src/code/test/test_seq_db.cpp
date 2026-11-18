@@ -1276,6 +1276,78 @@ TEST(cursor_scan_cost) {
     TEST_PASS
 }
 
+// Pairs Y_i at {20, i, 0} and X_i at {21, i, 0} with tag_other and on_tag_b
+// installed (tag_other on Y_i tags X_i with "TagB", which on_tag_b then runs on)
+static void make_chain_db(SeqDB& d, size_t pairs, FilterInterface* tag_other, FilterInterface* on_tag_b) {
+    for (size_t k = 0; k < pairs; ++k) {
+        { DBEntry<> e; e.clear().add_tag("X").value() = "x"; e.set_key({21, (vtx_t)k, 0}); d.add_entry(move(e)); }
+        { DBEntry<> e; e.clear().add_tag("Y").value() = "y"; e.set_key({20, (vtx_t)k, 0}); d.add_entry(move(e)); }
+    }
+    d.install_filter(make_shared<Filter>(tag_other));
+    d.install_filter(make_shared<Filter>(on_tag_b));
+}
+
+// In single-sweep mode a process request sweeps over the entries once:
+// entries made eligible during the sweep (here by another filter tagging
+// them) are left for the next request. Until-done follows them up in the
+// same request.
+TEST(single_sweep_leaves_follow_ups_for_next_request) {
+    FilterInterface tag_other { filter_name: "TEST_tag_other", filter_type: SINGLE_ENTRY,
+        should_run: &g_TEST_tag_other_should_run, init: nullptr, destroy: nullptr, run: &g_TEST_tag_other_run };
+    FilterInterface on_tag_b { filter_name: "TEST_on_tag_b", filter_type: SINGLE_ENTRY,
+        should_run: &g_TEST_on_tag_b_should_run, init: nullptr, destroy: nullptr, run: &g_TEST_on_tag_b_run };
+    size_t pairs = 20;
+
+    {
+        g_TEST_on_tag_b_runs = 0;
+        SeqDB d;
+        make_chain_db(d, pairs, &tag_other, &on_tag_b);
+        d.process();
+        EQ(g_TEST_on_tag_b_runs, pairs);
+    }
+    {
+        g_TEST_on_tag_b_runs = 0;
+        SeqDB d;
+        d.set_single_sweep(true);
+        make_chain_db(d, pairs, &tag_other, &on_tag_b);
+        d.process();
+        // TagB was only applied when the stage closed, after the sweep
+        EQ(g_TEST_on_tag_b_runs, 0);
+        size_t tagged = 0;
+        for (auto & [key, entry] : d.entries())
+            if (entry.has_tag("X") && entry.has_tag("TagB")) ++tagged;
+        EQ(tagged, pairs);
+        // The next request is a new sweep, which picks them up
+        d.process();
+        EQ(g_TEST_on_tag_b_runs, pairs);
+    }
+
+    TEST_PASS
+}
+
+// A single sweep offers every entry to the filters exactly once, even when
+// max_filters_per_stage splits it over many passes
+TEST(single_sweep_offers_each_entry_once) {
+    FilterInterface tag_other { filter_name: "TEST_tag_other", filter_type: SINGLE_ENTRY,
+        should_run: &g_TEST_tag_other_should_run, init: nullptr, destroy: nullptr, run: &g_TEST_tag_other_run };
+    FilterInterface on_tag_b { filter_name: "TEST_on_tag_b", filter_type: SINGLE_ENTRY,
+        should_run: &g_TEST_on_tag_b_should_run, init: nullptr, destroy: nullptr, run: &g_TEST_on_tag_b_run };
+    size_t pairs = 20;
+    SeqDB d;
+    d.set_single_sweep(true);
+    d.set_max_filters_per_stage(1);
+    make_chain_db(d, pairs, &tag_other, &on_tag_b);
+    d.process();
+
+    EQ(d.entries_examined(), 2*pairs);
+    size_t y_done = 0;
+    for (auto & [key, entry] : d.entries())
+        if (entry.has_tag("Y") && entry.has_tag("tag_other:done")) ++y_done;
+    EQ(y_done, pairs);
+
+    TEST_PASS
+}
+
 TESTS_BEGIN
     elga::ZMQChatterbox::Setup();
 
@@ -1317,6 +1389,8 @@ TESTS_BEGIN
     RUN_TEST(max_filters_per_stage_rejects_zero)
     RUN_TEST(cursor_runs_entries_behind_cursor)
     RUN_TEST(cursor_scan_cost)
+    RUN_TEST(single_sweep_leaves_follow_ups_for_next_request)
+    RUN_TEST(single_sweep_offers_each_entry_once)
 
     elga::ZMQChatterbox::Teardown();
 TESTS_END
