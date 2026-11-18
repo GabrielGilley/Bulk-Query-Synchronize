@@ -51,7 +51,7 @@ fi
 
 
 # Submit batch job
-SLURM_OUTPUT=$(sbatch -N "$NODE_COUNT" --mem 360000 pardb.sbatch "$MAX_FILTERS_PER_STAGE" "$WRITE_BATCH_BYTES" "$SWEEP")
+SLURM_OUTPUT=$(sbatch -N "$NODE_COUNT" --mem 390000 pardb.sbatch "$MAX_FILTERS_PER_STAGE" "$WRITE_BATCH_BYTES" "$SWEEP")
 JOB_ID=$(echo "$SLURM_OUTPUT" | awk '{print $4}')
 echo "Batch job submitted with $NODE_COUNT nodes. Job ID: $JOB_ID"
 
