@@ -1326,7 +1326,7 @@ class ParDB : public PandoParticipant {
          *        starts to continue the same request. Each request starts a
          *        new sweep over the entries (see SeqDB::start_new_sweep).
          */
-        void broadcast_process(bool new_request) {
+        void broadcast_process(bool new_request = true) {
             char msg[sizeof(msg_type_t) + sizeof(uint8_t)];
             char* msg_ptr = msg;
             pack_msg(msg_ptr, PROCESS);
