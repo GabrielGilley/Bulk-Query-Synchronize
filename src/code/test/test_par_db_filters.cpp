@@ -1520,18 +1520,23 @@ TEST(forward_writes_to_owner) {
 // takes part in every pass) and whether each agent offered each of its
 // entries to the filters exactly once
 static int run_sweep(const string& build_dir, bool once, size_t max_filters,
-                     uint64_t& passes, bool& each_entry_once) {
+                     uint64_t& passes, bool& each_entry_once, size_t scan_block_keys = 0) {
     g_idx = 0;
     const size_t n = 12;
     const size_t sz = 2ull*(1ull<<29);
-    const size_t batch = ParDB::DEFAULT_WRITE_BATCH_BYTES;
+    ParDBOptions opts;
+    opts.max_filters_per_stage = max_filters;
+    opts.single_sweep = once;
+    opts.scan_block_keys = scan_block_keys;
 
     elga::ZMQAddress db1_addr { "127.0.0.1", g_idx+=inc_amount };
-    ParDBThread db1 { db1_addr, sz, false, max_filters, batch, once };
+    ParDBThread db1 { db1_addr, sz, opts };
     elga::ZMQAddress db2_addr { "127.0.0.1", g_idx+=inc_amount };
-    ParDBThread db2 { db2_addr, sz, false, max_filters, batch, once };
+    ParDBThread db2 { db2_addr, sz, opts };
     elga::ZMQAddress db3_addr { "127.0.0.1", g_idx+=inc_amount };
-    ParDBThread db3 { db3_addr, sz, false, max_filters, batch, once };
+    ParDBThread db3 { db3_addr, sz, opts };
+    EQ(db1.db().single_sweep(), once);
+    EQ(db1.db().scan_block_keys(), scan_block_keys ? scan_block_keys : SeqDB::DEFAULT_SCAN_BLOCK_KEYS);
 
     ParDBClient c1 { db1_addr };
     ParDBClient c2 { db2_addr };
@@ -1621,6 +1626,11 @@ TEST(process_request_passes_with_filter_limit) {
     EQ(run_sweep(build_dir, false, 1, passes_until_done, each_once), 0);
     EQ(each_once, false);
     EQ(passes_until_done >= passes_once, true);
+
+    // The same with 2-key scan blocks, so passes stop inside blocks
+    uint64_t passes_small_blocks;
+    EQ(run_sweep(build_dir, true, 1, passes_small_blocks, each_once, 2), 0);
+    EQ(each_once, true);
 
     TEST_PASS
 }

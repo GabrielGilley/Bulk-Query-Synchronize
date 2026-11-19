@@ -1366,7 +1366,7 @@ void g_TEST_block_run(void* access) {
     acc->add_tag.run(&acc->add_tag, "A:done");
 }
 
-// The scan fetches entries in blocks (SeqDB::SCAN_BLOCK_KEYS keys per
+// The scan fetches entries in blocks (SeqDB::scan_block_keys() keys per
 // request). Over several blocks, and with the filter limit stopping passes
 // part way through a block, every eligible entry still runs exactly once with
 // its own value, and a single sweep still offers each entry exactly once
@@ -1419,6 +1419,30 @@ TEST(scan_in_blocks) {
         EQ(g_TEST_block_runs, eligible);
         EQ(g_TEST_block_bad_values, 0);
         EQ(d.entries_examined(), n);
+    }
+    // Other block sizes, including one key per request and blocks that do
+    // not divide the entries evenly, give the same result
+    for (size_t block : {(size_t)1, (size_t)7, (size_t)333, (size_t)100000}) {
+        g_TEST_block_runs = g_TEST_block_bad_values = 0;
+        SeqDB d;
+        d.set_single_sweep(true);
+        d.set_scan_block_keys(block);
+        EQ(d.scan_block_keys(), block);
+        fill(d);
+        d.set_max_filters_per_stage(7);
+        d.process();
+        EQ(g_TEST_block_runs, eligible);
+        EQ(g_TEST_block_bad_values, 0);
+        EQ(d.entries_examined(), n);
+    }
+    // A block of zero keys is rejected
+    {
+        SeqDB d;
+        EQ(d.scan_block_keys(), SeqDB::DEFAULT_SCAN_BLOCK_KEYS);
+        bool threw = false;
+        try { d.set_scan_block_keys(0); } catch (invalid_argument&) { threw = true; }
+        EQ(threw, true);
+        EQ(d.scan_block_keys(), SeqDB::DEFAULT_SCAN_BLOCK_KEYS);
     }
 
     TEST_PASS

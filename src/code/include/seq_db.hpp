@@ -218,8 +218,8 @@ class SeqDB {
         bool sweep_done_ = false;
 
         /** @brief The scan fetches entries from the map in blocks of this many
-         * keys, one request per block */
-        static constexpr size_t SCAN_BLOCK_KEYS = 4096;
+         * keys, one request per block (see set_scan_block_keys) */
+        size_t scan_block_keys_ = DEFAULT_SCAN_BLOCK_KEYS;
         /** @brief ...and a block's reply stops growing past about this many
          * bytes, so databases with large values (e.g. whole blocks of a
          * blockchain) do not get huge replies; the rest of the block is
@@ -329,7 +329,7 @@ class SeqDB {
                   size_t block_begin = scan_pos_;
                   size_t block_keys = 0;
                   vector<DBEntry<>> block = db_.retrieve_entries_by_keys(scan_keys_, block_begin,
-                      SCAN_BLOCK_KEYS, SCAN_BLOCK_BYTES, block_keys);
+                      scan_block_keys_, SCAN_BLOCK_BYTES, block_keys);
                   size_t next_in_block = 0;
 
                   for (size_t p = block_begin; p < block_begin + block_keys; ++p) {
@@ -981,6 +981,21 @@ class SeqDB {
 
         /** @brief Whether each process request makes a single sweep */
         bool single_sweep() const { return single_sweep_; }
+
+        /** @brief Default number of keys the scan fetches per request */
+        static constexpr size_t DEFAULT_SCAN_BLOCK_KEYS = 4096;
+
+        /** @brief Set how many keys the filter scan fetches from the map per
+         * request. Larger blocks mean fewer requests; each block's entries are
+         * held in memory while it is scanned (its reply is capped at about
+         * SCAN_BLOCK_BYTES whatever the block size). */
+        void set_scan_block_keys(size_t n) {
+            if (n == 0) throw invalid_argument("scan_block_keys must be at least 1");
+            scan_block_keys_ = n;
+        }
+
+        /** @brief Return how many keys the filter scan fetches per request */
+        size_t scan_block_keys() const { return scan_block_keys_; }
 
         /** @brief Whether changes are staged, waiting for a stage close */
         bool has_staged_changes() const {

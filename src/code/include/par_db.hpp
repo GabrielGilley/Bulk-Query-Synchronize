@@ -18,6 +18,7 @@
 #include "par_db_client.hpp"
 #include "par_db_proxy.hpp"
 #include "par_db_access.hpp"
+#include "par_db_options.hpp"
 #include "par_db_thread.hpp"
 #include "par_db_responder.hpp"
 #include "process_stats.hpp"
@@ -128,7 +129,7 @@ class ParDB : public PandoParticipant {
 
     public:
         /** @brief Default flush size for write batches */
-        static constexpr size_t DEFAULT_WRITE_BATCH_BYTES = 256 * 1024;
+        static constexpr size_t DEFAULT_WRITE_BATCH_BYTES = ParDBOptions::DEFAULT_WRITE_BATCH_BYTES;
 
         /** @brief Initialize the parallel DB
          *
@@ -142,6 +143,10 @@ class ParDB : public PandoParticipant {
          */
         ParDB(ZMQAddress addr, size_t sz, bool skip_group_filters=false, size_t max_filters_per_stage=0,
               size_t write_batch_bytes=DEFAULT_WRITE_BATCH_BYTES, bool single_sweep=false) :
+                ParDB(addr, sz, ParDBOptions{skip_group_filters, max_filters_per_stage, write_batch_bytes, single_sweep}) { }
+
+        /** @brief Initialize the parallel DB with the given settings */
+        ParDB(ZMQAddress addr, size_t sz, const ParDBOptions& opts) :
                 PandoParticipant(addr, true),
                 db_refs_(this,
                     s_ref_add_entry,
@@ -159,8 +164,8 @@ class ParDB : public PandoParticipant {
                 local_sent_dist_(0),
                 local_recv_dist_(0),
                 responder_(addr + RESPONDER_LOCALNUM_OFFSET),
-                skip_group_filters_(skip_group_filters),
-                write_batch_bytes_(write_batch_bytes) {
+                skip_group_filters_(opts.skip_group_filters),
+                write_batch_bytes_(opts.write_batch_bytes) {
             sub(PROCESS);
             sub(ALGPROCESS);
             sub(END_BARRIER);
@@ -170,8 +175,9 @@ class ParDB : public PandoParticipant {
             sub(EXPORT_DB);
 
             if (skip_group_filters_) db_.disable_group_filters();
-            if (max_filters_per_stage != 0) db_.set_max_filters_per_stage(max_filters_per_stage);
-            db_.set_single_sweep(single_sweep);
+            if (opts.max_filters_per_stage != 0) db_.set_max_filters_per_stage(opts.max_filters_per_stage);
+            db_.set_single_sweep(opts.single_sweep);
+            if (opts.scan_block_keys != 0) db_.set_scan_block_keys(opts.scan_block_keys);
 
             // The message loop does not run while filters run, so publish
             // progress from inside the filter loops instead
@@ -340,6 +346,9 @@ class ParDB : public PandoParticipant {
 
         /** @brief Whether each process request makes a single sweep */
         bool single_sweep() const { return db_.single_sweep(); }
+
+        /** @brief Keys the filter scan fetches from the map per request */
+        size_t scan_block_keys() const { return db_.scan_block_keys(); }
 
         /** @brief Processing passes this agent has started (for tests) */
         uint64_t passes_started() const { return db_.stats().pass; }

@@ -2,6 +2,8 @@
 
 #include <thread>
 
+#include "par_db_options.hpp"
+
 using namespace std;
 using namespace elga;
 
@@ -45,6 +47,11 @@ class ParDBThread {
         ParDBThread(ZMQAddress addr, size_t sz, bool skip_group_filters, size_t max_filters_per_stage, size_t write_batch_bytes,
                     bool single_sweep) :
                 db_(addr, sz, skip_group_filters, max_filters_per_stage, write_batch_bytes, single_sweep), shutdown_(false) {
+            t_ = thread(&ParDBThread::launch, this);
+        }
+
+        /** @brief Initialize with the given settings (see ParDBOptions) */
+        ParDBThread(ZMQAddress addr, size_t sz, const ParDBOptions& opts) : db_(addr, sz, opts), shutdown_(false) {
             t_ = thread(&ParDBThread::launch, this);
         }
 

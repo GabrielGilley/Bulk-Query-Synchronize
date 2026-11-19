@@ -31,9 +31,9 @@ void set_handler() {
 int main_(int argc, char **argv) {
     cerr << "[Pando] [INFO] Loading..." << endl;
 
-    if (argc < 2 || argc > 8) {
+    if (argc < 2 || argc > 9) {
         cerr << "Usage: pando_pardb bind-addr [seed-addr] [-M<mem in GB>] [--skip-group-filters] [--max-filters-per-stage=N]\n"
-            "                   [--write-batch-bytes=N] [--sweep=until-done|once]\n"
+            "                   [--write-batch-bytes=N] [--sweep=until-done|once] [--scan-block-keys=N]\n"
             "\n"
             "Parameters:\n"
             "  bind-addr : the address to bind this specific DB agent to\n"
@@ -52,6 +52,8 @@ int main_(int argc, char **argv) {
             "                          left for the next request. Use once only if no filter's\n"
             "                          writes can make an entry eligible for a filter in the\n"
             "                          same request.\n"
+            "  --scan-block-keys=N : keys the filter scan fetches from the map per request\n"
+            "                          (default 4096; each reply is also capped at ~16 MB)\n"
             "\n"
             "Addresses are of the form: IPv4-string,ID\n"
             "  IPv4-string : a period separated IP address, e.g., 1.2.3.4\n"
@@ -70,6 +72,8 @@ int main_(int argc, char **argv) {
     const string write_batch_flag = "--write-batch-bytes=";
     bool single_sweep = false;
     const string sweep_flag = "--sweep=";
+    size_t scan_block_keys = 0;  // 0 = SeqDB default
+    const string scan_block_flag = "--scan-block-keys=";
     for (int idx = 2; idx < argc; ++idx) {
         if (argv[idx][0] == '-' && argv[idx][1] == 'M') {
             sz = (1ull<<30)*strtoul(&(argv[idx][2]), NULL, 10);
@@ -95,6 +99,16 @@ int main_(int argc, char **argv) {
                 return 1;
             }
             write_batch_bytes = n;
+        } else if (std::string(argv[idx]).rfind(scan_block_flag, 0) == 0) {
+            const char* val = argv[idx] + scan_block_flag.size();
+            char* end = nullptr;
+            errno = 0;
+            unsigned long long n = strtoull(val, &end, 10);
+            if (*val == '\0' || *val == '-' || *end != '\0' || errno != 0 || n == 0) {
+                cerr << "[Pando] [ERROR] " << scan_block_flag << " needs a positive integer, got '" << val << "'" << endl;
+                return 1;
+            }
+            scan_block_keys = n;
         } else if (std::string(argv[idx]).rfind(sweep_flag, 0) == 0) {
             string val = argv[idx] + sweep_flag.size();
             if (val == "once") single_sweep = true;
@@ -112,8 +126,15 @@ int main_(int argc, char **argv) {
     cerr << "[Pando] [DEBUG] Bind addr=" << bind_addr.get_conn_str(bind_addr, REQUEST) << " memory=" << sz
          << " max_filters_per_stage=" << (max_filters_per_stage ? to_string(max_filters_per_stage) : string("default"))
          << " write_batch_bytes=" << (write_batch_bytes ? to_string(write_batch_bytes) : string("off"))
-         << " sweep=" << (single_sweep ? "once" : "until-done") << endl;
-    ParDBThread db { bind_addr, sz, skip_group_filters, max_filters_per_stage, write_batch_bytes, single_sweep };
+         << " sweep=" << (single_sweep ? "once" : "until-done")
+         << " scan_block_keys=" << (scan_block_keys ? to_string(scan_block_keys) : string("default")) << endl;
+    ParDBOptions opts;
+    opts.skip_group_filters = skip_group_filters;
+    opts.max_filters_per_stage = max_filters_per_stage;
+    opts.write_batch_bytes = write_batch_bytes;
+    opts.single_sweep = single_sweep;
+    opts.scan_block_keys = scan_block_keys;
+    ParDBThread db { bind_addr, sz, opts };
 
     if (argc > 2) {
         elga::ZMQAddress seed_addr = get_zmq_addr(argv[2]);
