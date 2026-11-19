@@ -1936,6 +1936,36 @@ TEST(mem_budget_same_result) {
     TEST_PASS
 }
 
+// Memory stops and a single sweep together: a byte budget that ends every
+// pass after 3 writes, with small scan blocks so passes stop inside blocks.
+// The sweep still offers each entry exactly once, and every eligible entry
+// still runs.
+TEST(single_sweep_with_memory_stops) {
+    g_TEST_max_filters_runs = 0;
+    SeqDB d;
+    d.set_meminfo_source([]() { return MemInfo{}; });
+    MemoryPolicy p = MemoryPolicy::disabled();
+    p.pass_budget_bytes = 3*g_A_DONE_BYTES;
+    d.set_memory_policy(p);
+    d.set_single_sweep(true);
+    d.set_scan_block_keys(3);
+    add_a_entries(d, 10);
+    for (int k = 0; k < 10; ++k) { DBEntry<> e; e.clear().add_tag("B"); d.add_entry(e); }
+    d.install_filter(make_shared<Filter>(&g_TEST_a_done_fi));
+
+    d.process();
+    EQ(g_TEST_max_filters_runs, 10);
+    EQ(count_a_done(d), 10);
+    EQ(d.entries_examined(), 20);
+    // Passes stopped for the budget along the way
+    size_t budget_stops = 0;
+    for (auto & h : d.stats().history)
+        if (h.stop_reason == STOP_MEM_BUDGET) ++budget_stops;
+    EQ(budget_stops >= 3, true);
+
+    TEST_PASS
+}
+
 TESTS_BEGIN
     elga::ZMQChatterbox::Setup();
 
@@ -1990,6 +2020,7 @@ TESTS_BEGIN
     RUN_TEST(stop_requested_after_a_run)
     RUN_TEST(mem_bytes_count_each_output)
     RUN_TEST(mem_budget_same_result)
+    RUN_TEST(single_sweep_with_memory_stops)
 
     elga::ZMQChatterbox::Teardown();
 TESTS_END
