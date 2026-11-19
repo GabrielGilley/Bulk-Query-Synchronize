@@ -1287,11 +1287,11 @@ static void make_chain_db(SeqDB& d, size_t pairs, FilterInterface* tag_other, Fi
     d.install_filter(make_shared<Filter>(on_tag_b));
 }
 
-// In single-sweep mode a process request sweeps over the entries once:
+// With continuous processing off, a process request sweeps over the entries once:
 // entries made eligible during the sweep (here by another filter tagging
-// them) are left for the next request. Until-done follows them up in the
+// them) are left for the next request. Continuous processing follows them up in the
 // same request.
-TEST(single_sweep_leaves_follow_ups_for_next_request) {
+TEST(continuous_processing_off_leaves_follow_ups_for_next_request) {
     FilterInterface tag_other { filter_name: "TEST_tag_other", filter_type: SINGLE_ENTRY,
         should_run: &g_TEST_tag_other_should_run, init: nullptr, destroy: nullptr, run: &g_TEST_tag_other_run };
     FilterInterface on_tag_b { filter_name: "TEST_on_tag_b", filter_type: SINGLE_ENTRY,
@@ -1308,7 +1308,7 @@ TEST(single_sweep_leaves_follow_ups_for_next_request) {
     {
         g_TEST_on_tag_b_runs = 0;
         SeqDB d;
-        d.set_single_sweep(true);
+        d.set_continuous_processing(false);
         make_chain_db(d, pairs, &tag_other, &on_tag_b);
         d.process();
         // TagB was only applied when the stage closed, after the sweep
@@ -1325,16 +1325,16 @@ TEST(single_sweep_leaves_follow_ups_for_next_request) {
     TEST_PASS
 }
 
-// A single sweep offers every entry to the filters exactly once, even when
+// With continuous processing off, every entry is offered to the filters exactly once, even when
 // max_filters_per_stage splits it over many passes
-TEST(single_sweep_offers_each_entry_once) {
+TEST(continuous_processing_off_offers_each_entry_once) {
     FilterInterface tag_other { filter_name: "TEST_tag_other", filter_type: SINGLE_ENTRY,
         should_run: &g_TEST_tag_other_should_run, init: nullptr, destroy: nullptr, run: &g_TEST_tag_other_run };
     FilterInterface on_tag_b { filter_name: "TEST_on_tag_b", filter_type: SINGLE_ENTRY,
         should_run: &g_TEST_on_tag_b_should_run, init: nullptr, destroy: nullptr, run: &g_TEST_on_tag_b_run };
     size_t pairs = 20;
     SeqDB d;
-    d.set_single_sweep(true);
+    d.set_continuous_processing(false);
     d.set_max_filters_per_stage(1);
     make_chain_db(d, pairs, &tag_other, &on_tag_b);
     d.process();
@@ -1369,7 +1369,7 @@ void g_TEST_block_run(void* access) {
 // The scan fetches entries in blocks (SeqDB::scan_block_keys() keys per
 // request). Over several blocks, and with the filter limit stopping passes
 // part way through a block, every eligible entry still runs exactly once with
-// its own value, and a single sweep still offers each entry exactly once
+// its own value, and with continuous processing off each entry is still offered exactly once
 TEST(scan_in_blocks) {
     FilterInterface f { filter_name: "TEST_block", filter_type: SINGLE_ENTRY,
         should_run: &g_TEST_block_should_run, init: nullptr, destroy: nullptr, run: &g_TEST_block_run };
@@ -1388,7 +1388,7 @@ TEST(scan_in_blocks) {
         d.install_filter(make_shared<Filter>(&f));
     };
 
-    // Until done, no limit: one pass runs everything, a second finds nothing
+    // Continuous, no limit: one pass runs everything, a second finds nothing
     {
         g_TEST_block_runs = g_TEST_block_bad_values = 0;
         SeqDB d;
@@ -1398,7 +1398,7 @@ TEST(scan_in_blocks) {
         EQ(g_TEST_block_bad_values, 0);
         EQ(d.entries_examined(), 2*n);
     }
-    // Until done, 7 runs per pass: passes stop part way through blocks
+    // Continuous, 7 runs per pass: passes stop part way through blocks
     {
         g_TEST_block_runs = g_TEST_block_bad_values = 0;
         SeqDB d;
@@ -1408,11 +1408,11 @@ TEST(scan_in_blocks) {
         EQ(g_TEST_block_runs, eligible);
         EQ(g_TEST_block_bad_values, 0);
     }
-    // One sweep, 7 runs per pass: every entry offered exactly once
+    // Not continuous, 7 runs per pass: every entry offered exactly once
     {
         g_TEST_block_runs = g_TEST_block_bad_values = 0;
         SeqDB d;
-        d.set_single_sweep(true);
+        d.set_continuous_processing(false);
         fill(d);
         d.set_max_filters_per_stage(7);
         d.process();
@@ -1425,7 +1425,7 @@ TEST(scan_in_blocks) {
     for (size_t block : {(size_t)1, (size_t)7, (size_t)333, (size_t)100000}) {
         g_TEST_block_runs = g_TEST_block_bad_values = 0;
         SeqDB d;
-        d.set_single_sweep(true);
+        d.set_continuous_processing(false);
         d.set_scan_block_keys(block);
         EQ(d.scan_block_keys(), block);
         fill(d);
@@ -1936,18 +1936,18 @@ TEST(mem_budget_same_result) {
     TEST_PASS
 }
 
-// Memory stops and a single sweep together: a byte budget that ends every
+// Memory stops with continuous processing off: a byte budget that ends every
 // pass after 3 writes, with small scan blocks so passes stop inside blocks.
 // The sweep still offers each entry exactly once, and every eligible entry
 // still runs.
-TEST(single_sweep_with_memory_stops) {
+TEST(continuous_processing_off_with_memory_stops) {
     g_TEST_max_filters_runs = 0;
     SeqDB d;
     d.set_meminfo_source([]() { return MemInfo{}; });
     MemoryPolicy p = MemoryPolicy::disabled();
     p.pass_budget_bytes = 3*g_A_DONE_BYTES;
     d.set_memory_policy(p);
-    d.set_single_sweep(true);
+    d.set_continuous_processing(false);
     d.set_scan_block_keys(3);
     add_a_entries(d, 10);
     for (int k = 0; k < 10; ++k) { DBEntry<> e; e.clear().add_tag("B"); d.add_entry(e); }
@@ -2007,8 +2007,8 @@ TESTS_BEGIN
     RUN_TEST(max_filters_per_stage_rejects_zero)
     RUN_TEST(cursor_runs_entries_behind_cursor)
     RUN_TEST(cursor_scan_cost)
-    RUN_TEST(single_sweep_leaves_follow_ups_for_next_request)
-    RUN_TEST(single_sweep_offers_each_entry_once)
+    RUN_TEST(continuous_processing_off_leaves_follow_ups_for_next_request)
+    RUN_TEST(continuous_processing_off_offers_each_entry_once)
     RUN_TEST(scan_in_blocks)
     RUN_TEST(memory_policy_on_by_default)
     RUN_TEST(memory_policy_disabled)
@@ -2020,7 +2020,7 @@ TESTS_BEGIN
     RUN_TEST(stop_requested_after_a_run)
     RUN_TEST(mem_bytes_count_each_output)
     RUN_TEST(mem_budget_same_result)
-    RUN_TEST(single_sweep_with_memory_stops)
+    RUN_TEST(continuous_processing_off_with_memory_stops)
 
     elga::ZMQChatterbox::Teardown();
 TESTS_END

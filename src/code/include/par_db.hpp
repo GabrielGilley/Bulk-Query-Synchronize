@@ -162,12 +162,12 @@ class ParDB : public PandoParticipant {
         }
 
         static ParDBOptions basic_options_(bool skip_group_filters, size_t max_filters_per_stage,
-                                           size_t write_batch_bytes, bool single_sweep) {
+                                           size_t write_batch_bytes, bool continuous_processing) {
             ParDBOptions opts;
             opts.skip_group_filters = skip_group_filters;
             opts.max_filters_per_stage = max_filters_per_stage;
             opts.write_batch_bytes = write_batch_bytes;
-            opts.single_sweep = single_sweep;
+            opts.continuous_processing = continuous_processing;
             return opts;
         }
 
@@ -191,12 +191,13 @@ class ParDB : public PandoParticipant {
          *        SeqDB::set_max_filters_per_stage); 0 keeps the default
          * @param write_batch_bytes flush size for write batches (see
          *        set_write_batch_bytes); 0 turns batching off
-         * @param single_sweep if true, each process request makes one sweep
-         *        over the entries and stops (see SeqDB::set_single_sweep)
+         * @param continuous_processing if false, each process request makes
+         *        one sweep over the entries and stops (see
+         *        SeqDB::set_continuous_processing)
          */
         ParDB(ZMQAddress addr, size_t sz, bool skip_group_filters=false, size_t max_filters_per_stage=0,
-              size_t write_batch_bytes=DEFAULT_WRITE_BATCH_BYTES, bool single_sweep=false) :
-                ParDB(addr, sz, basic_options_(skip_group_filters, max_filters_per_stage, write_batch_bytes, single_sweep)) { }
+              size_t write_batch_bytes=DEFAULT_WRITE_BATCH_BYTES, bool continuous_processing=true) :
+                ParDB(addr, sz, basic_options_(skip_group_filters, max_filters_per_stage, write_batch_bytes, continuous_processing)) { }
 
         /** @brief Initialize the parallel DB with a memory policy
          *
@@ -242,7 +243,7 @@ class ParDB : public PandoParticipant {
 
             if (skip_group_filters_) db_.disable_group_filters();
             if (opts.max_filters_per_stage != 0) db_.set_max_filters_per_stage(opts.max_filters_per_stage);
-            db_.set_single_sweep(opts.single_sweep);
+            db_.set_continuous_processing(opts.continuous_processing);
             if (opts.scan_block_keys != 0) db_.set_scan_block_keys(opts.scan_block_keys);
             db_.set_memory_policy(opts.mem_policy);
             slurm_tasks_per_node_ = slurm_tasks_per_node();
@@ -467,8 +468,8 @@ class ParDB : public PandoParticipant {
         /** @brief Return the flush size for write batches (0 = off) */
         size_t write_batch_bytes() const { return write_batch_bytes_; }
 
-        /** @brief Whether each process request makes a single sweep */
-        bool single_sweep() const { return db_.single_sweep(); }
+        /** @brief Whether a process request keeps sweeping until nothing runs */
+        bool continuous_processing() const { return db_.continuous_processing(); }
 
         /** @brief Keys the filter scan fetches from the map per request */
         size_t scan_block_keys() const { return db_.scan_block_keys(); }

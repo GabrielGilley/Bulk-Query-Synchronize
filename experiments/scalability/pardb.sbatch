@@ -11,13 +11,13 @@
 #####################
 ## Cluster parameters
 
-### Script arguments (passed after the script name: sbatch ... pardb.sbatch [N] [BYTES] [SWEEP] [KEYS] [INTERN] [PCT] [MB] [FRACTION] [AGENTS])
+### Script arguments (passed after the script name: sbatch ... pardb.sbatch [N] [BYTES] [CONTINUOUS] [KEYS] [INTERN] [PCT] [MB] [FRACTION] [AGENTS])
 # $1: max filter runs per processing pass (optional; empty = pando_pardb default)
 MAX_FILTERS_PER_STAGE="${1:-}"
 # $2: write batch flush size in bytes (optional; empty = pando_pardb default, 0 = off)
 WRITE_BATCH_BYTES="${2:-}"
-# $3: how a process request ends, until-done or once (optional; empty = pando_pardb default, until-done)
-SWEEP="${3:-}"
+# $3: continuous processing, on or off (optional; empty = pando_pardb default, on)
+CONTINUOUS_PROCESSING="${3:-}"
 # $4: keys the filter scan fetches per request (optional; empty = pando_pardb default, 4096)
 SCAN_BLOCK_KEYS="${4:-}"
 # $5: store each distinct tag once per process, on or off (optional; empty = pando_pardb default, on)
@@ -67,11 +67,11 @@ echo $PANDO_PARDB_BIN
 echo $PANDO_BIND_IP_FILE
 echo "MAX_FILTERS_PER_STAGE=${MAX_FILTERS_PER_STAGE:-default}"
 echo "WRITE_BATCH_BYTES=${WRITE_BATCH_BYTES:-default}"
-echo "SWEEP=${SWEEP:-default}"
+echo "CONTINUOUS_PROCESSING=${CONTINUOUS_PROCESSING:-default}"
 echo "SCAN_BLOCK_KEYS=${SCAN_BLOCK_KEYS:-default}"
 echo "INTERN_TAGS=${INTERN_TAGS:-default}"
 echo "MEM_LIMIT_PCT=${MEM_LIMIT_PCT:-default} MEM_PASS_BUDGET_MB=${MEM_PASS_BUDGET_MB:-default} MEM_BUDGET_FRACTION=${MEM_BUDGET_FRACTION:-default} AGENTS_PER_NODE=${AGENTS_PER_NODE:-default}"
-srun --unbuffered bash pardb.internal "$PANDO_MESH_ENTRY" "$PANDO_PARDB_BIN" "$PANDO_BIND_IP_FILE" "$MAX_FILTERS_PER_STAGE" "$WRITE_BATCH_BYTES" "$SWEEP" "$SCAN_BLOCK_KEYS" "$INTERN_TAGS" \
+srun --unbuffered bash pardb.internal "$PANDO_MESH_ENTRY" "$PANDO_PARDB_BIN" "$PANDO_BIND_IP_FILE" "$MAX_FILTERS_PER_STAGE" "$WRITE_BATCH_BYTES" "$CONTINUOUS_PROCESSING" "$SCAN_BLOCK_KEYS" "$INTERN_TAGS" \
     "$MEM_LIMIT_PCT" "$MEM_PASS_BUDGET_MB" "$MEM_BUDGET_FRACTION" "$AGENTS_PER_NODE"
 
 echo FINISH

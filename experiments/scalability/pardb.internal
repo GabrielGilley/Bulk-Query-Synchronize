@@ -5,8 +5,8 @@ PANDO_BIND_IP_FILE="$1"; shift
 MAX_FILTERS_PER_STAGE="${1:-}"
 # Optional: write batch flush size in bytes (empty = pando_pardb default, 0 = off)
 WRITE_BATCH_BYTES="${2:-}"
-# Optional: how a process request ends, until-done or once (empty = pando_pardb default, until-done)
-SWEEP="${3:-}"
+# Optional: continuous processing, on or off (empty = pando_pardb default, on)
+CONTINUOUS_PROCESSING="${3:-}"
 # Optional: keys the filter scan fetches per request (empty = pando_pardb default, 4096)
 SCAN_BLOCK_KEYS="${4:-}"
 # Optional: store each distinct tag once per process, on or off (empty = pando_pardb default, on)
@@ -36,12 +36,12 @@ fi
 if [[ -n "$WRITE_BATCH_BYTES" ]]; then
     PARDB_EXTRA_ARGS+=("--write-batch-bytes=$WRITE_BATCH_BYTES")
 fi
-if [[ -n "$SWEEP" && "$SWEEP" != "once" && "$SWEEP" != "until-done" ]]; then
-    echo "pardb.internal: sweep must be once or until-done, got '$SWEEP' (are the arguments shifted?)" >&2
+if [[ -n "$CONTINUOUS_PROCESSING" && "$CONTINUOUS_PROCESSING" != "on" && "$CONTINUOUS_PROCESSING" != "off" ]]; then
+    echo "pardb.internal: continuous processing must be on or off, got '$CONTINUOUS_PROCESSING' (are the arguments shifted?)" >&2
     exit 1
 fi
-if [[ -n "$SWEEP" ]]; then
-    PARDB_EXTRA_ARGS+=("--sweep=$SWEEP")
+if [[ -n "$CONTINUOUS_PROCESSING" ]]; then
+    PARDB_EXTRA_ARGS+=("--continuous-processing=$CONTINUOUS_PROCESSING")
 fi
 if [[ -n "$SCAN_BLOCK_KEYS" && ! "$SCAN_BLOCK_KEYS" =~ ^[1-9][0-9]*$ ]]; then
     echo "pardb.internal: scan block keys must be a positive integer, got '$SCAN_BLOCK_KEYS' (are the arguments shifted?)" >&2

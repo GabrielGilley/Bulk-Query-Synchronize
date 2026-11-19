@@ -24,9 +24,10 @@ struct ParDBOptions {
     /** @brief Flush size for write batches; 0 turns batching off */
     size_t write_batch_bytes = DEFAULT_WRITE_BATCH_BYTES;
 
-    /** @brief Each process request makes one sweep over the entries and
-     * stops (see SeqDB::set_single_sweep) */
-    bool single_sweep = false;
+    /** @brief Keep sweeping over the entries until a whole sweep runs no
+     * filter (the default); false processes each entry once per request
+     * (see SeqDB::set_continuous_processing) */
+    bool continuous_processing = true;
 
     /** @brief Keys the filter scan fetches from the map per request (see
      * SeqDB::set_scan_block_keys); 0 = SeqDB's default */

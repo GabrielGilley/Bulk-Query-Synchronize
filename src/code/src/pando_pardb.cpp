@@ -55,7 +55,7 @@ int main_(int argc, char **argv) {
 
     if (argc < 2) {
         cerr << "Usage: pando_pardb bind-addr [seed-addr] [-M<mem in GB>] [--skip-group-filters] [--max-filters-per-stage=N]\n"
-            "                   [--write-batch-bytes=N] [--sweep=until-done|once] [--scan-block-keys=N]\n"
+            "                   [--write-batch-bytes=N] [--continuous-processing=on|off] [--scan-block-keys=N]\n"
             "                   [--intern-tags=on|off]\n"
             "                   [--mem-limit-pct=P] [--mem-pass-budget-mb=N] [--mem-budget-fraction=F]\n"
             "                   [--agents-per-node=N]\n"
@@ -71,13 +71,14 @@ int main_(int argc, char **argv) {
             "  --write-batch-bytes=N : while filters run, send each agent's writes in messages\n"
             "                          of about N bytes instead of one message per write\n"
             "                          (default 262144; 0 = one message per write)\n"
-            "  --sweep=until-done|once : how a process request ends. until-done (default):\n"
-            "                          sweep over the entries until a whole sweep runs no\n"
-            "                          filter. once: sweep over the entries once and stop;\n"
-            "                          entries created or made eligible during the sweep are\n"
-            "                          left for the next request. Use once only if no filter's\n"
-            "                          writes can make an entry eligible for a filter in the\n"
-            "                          same request.\n"
+            "  --continuous-processing=on|off : how a process request ends. on (default): keep\n"
+            "                          sweeping over the entries until a whole sweep runs no\n"
+            "                          filter, so filters that make other entries eligible are\n"
+            "                          followed up. off: process each entry once per request,\n"
+            "                          then stop (a sweep can still span several passes);\n"
+            "                          entries created or made eligible during it are left for\n"
+            "                          the next request. Use off only if no filter's writes can\n"
+            "                          make an entry eligible for a filter in the same request.\n"
             "  --scan-block-keys=N : keys the filter scan fetches from the map per request\n"
             "                          (default 4096; each reply is also capped at ~16 MB)\n"
             "  --intern-tags=on|off : store each distinct tag once per process and have entries\n"
@@ -117,14 +118,14 @@ int main_(int argc, char **argv) {
     bool skip_group_filters = false;
     size_t max_filters_per_stage = 0;  // 0 = SeqDB default
     size_t write_batch_bytes = ParDB::DEFAULT_WRITE_BATCH_BYTES;
-    bool single_sweep = false;
+    bool continuous_processing = true;
     size_t scan_block_keys = 0;  // 0 = SeqDB default
     bool intern_tags = true;
     MemoryPolicy mem_policy;    // enabled by default (see memory_policy.hpp)
 
     const string max_filters_flag = "--max-filters-per-stage=";
     const string write_batch_flag = "--write-batch-bytes=";
-    const string sweep_flag = "--sweep=";
+    const string continuous_flag = "--continuous-processing=";
     const string scan_block_flag = "--scan-block-keys=";
     const string intern_flag = "--intern-tags=";
     const string mem_limit_flag = "--mem-limit-pct=";
@@ -162,10 +163,10 @@ int main_(int argc, char **argv) {
             if (string(val) == "on") intern_tags = true;
             else if (string(val) == "off") intern_tags = false;
             else return bad(intern_flag, val, "on or off");
-        } else if ((val = flag_val(arg, sweep_flag))) {
-            if (string(val) == "once") single_sweep = true;
-            else if (string(val) == "until-done") single_sweep = false;
-            else return bad(sweep_flag, val, "until-done or once");
+        } else if ((val = flag_val(arg, continuous_flag))) {
+            if (string(val) == "on") continuous_processing = true;
+            else if (string(val) == "off") continuous_processing = false;
+            else return bad(continuous_flag, val, "on or off");
         } else if ((val = flag_val(arg, mem_limit_flag))) {
             if (!parse_double_in(val, 0, 100, mem_policy.limit_pct, true)) return bad(mem_limit_flag, val, "a percent in [0, 100]");
         } else if ((val = flag_val(arg, mem_budget_flag))) {
@@ -188,7 +189,7 @@ int main_(int argc, char **argv) {
     cerr << "[Pando] [DEBUG] Bind addr=" << bind_addr.get_conn_str(bind_addr, REQUEST) << " memory=" << sz
          << " max_filters_per_stage=" << (max_filters_per_stage ? to_string(max_filters_per_stage) : string("unlimited"))
          << " write_batch_bytes=" << (write_batch_bytes ? to_string(write_batch_bytes) : string("off"))
-         << " sweep=" << (single_sweep ? "once" : "until-done")
+         << " continuous_processing=" << (continuous_processing ? "on" : "off")
          << " scan_block_keys=" << (scan_block_keys ? to_string(scan_block_keys) : string("default"))
          << " intern_tags=" << (intern_tags ? "on" : "off") << endl;
     if (mem_policy.enabled()) {
@@ -211,7 +212,7 @@ int main_(int argc, char **argv) {
     opts.skip_group_filters = skip_group_filters;
     opts.max_filters_per_stage = max_filters_per_stage;
     opts.write_batch_bytes = write_batch_bytes;
-    opts.single_sweep = single_sweep;
+    opts.continuous_processing = continuous_processing;
     opts.scan_block_keys = scan_block_keys;
     opts.mem_policy = mem_policy;
     ParDBThread db { bind_addr, sz, opts };
