@@ -66,7 +66,8 @@ int main_(int argc, char **argv) {
             "  -M<mem> : memory in GB, defaults to 16 (e.g., -M8 would allocate 8 GB)\n"
             "  --skip-group-filters : skip processing of group filters\n"
             "  --max-filters-per-stage=N : run at most N filters per processing pass before\n"
-            "                              closing the stage (bounds memory; default 100000)\n"
+            "                              closing the stage (bounds memory; default unlimited,\n"
+            "                              the memory limits below bound memory instead)\n"
             "  --write-batch-bytes=N : while filters run, send each agent's writes in messages\n"
             "                          of about N bytes instead of one message per write\n"
             "                          (default 262144; 0 = one message per write)\n"
@@ -185,7 +186,7 @@ int main_(int argc, char **argv) {
     }
 
     cerr << "[Pando] [DEBUG] Bind addr=" << bind_addr.get_conn_str(bind_addr, REQUEST) << " memory=" << sz
-         << " max_filters_per_stage=" << (max_filters_per_stage ? to_string(max_filters_per_stage) : string("default"))
+         << " max_filters_per_stage=" << (max_filters_per_stage ? to_string(max_filters_per_stage) : string("unlimited"))
          << " write_batch_bytes=" << (write_batch_bytes ? to_string(write_batch_bytes) : string("off"))
          << " sweep=" << (single_sweep ? "once" : "until-done")
          << " scan_block_keys=" << (scan_block_keys ? to_string(scan_block_keys) : string("default"))

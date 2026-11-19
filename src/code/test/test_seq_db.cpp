@@ -1122,7 +1122,7 @@ TEST(max_filters_per_stage) {
     };
 
     SeqDB d;
-    EQ(d.max_filters_per_stage(), 100000);
+    EQ(d.max_filters_per_stage(), SeqDB::UNLIMITED_FILTERS_PER_STAGE);
     for (int k = 0; k < 5; ++k) { DBEntry<> e; e.clear().add_tag("A"); d.add_entry(e); }
     { DBEntry<> e; e.clear().add_tag("B"); d.add_entry(e); }
 
@@ -1158,7 +1158,7 @@ TEST(max_filters_per_stage_rejects_zero) {
         threw = true;
     }
     EQ(threw, true);
-    EQ(d.max_filters_per_stage(), 100000);
+    EQ(d.max_filters_per_stage(), SeqDB::UNLIMITED_FILTERS_PER_STAGE);
 
     TEST_PASS
 }

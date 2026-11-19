@@ -16,7 +16,7 @@ DATA_DIR="/cscratch/pando-chr13-R1"
 RESULTS_DIR="/cscratch/results/"
 NODE_COUNT=8
 # Filter runs per processing pass before the stage closes (bounds memory).
-# Empty = pando_pardb default (100000).
+# Empty = pando_pardb default (unlimited; its memory limits bound memory instead).
 MAX_FILTERS_PER_STAGE=5000
 # Write batch flush size in bytes per destination agent (empty = pando_pardb default of 262144, 0 = off)
 WRITE_BATCH_BYTES=
