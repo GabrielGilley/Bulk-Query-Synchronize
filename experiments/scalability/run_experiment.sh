@@ -20,10 +20,12 @@ NODE_COUNT=8
 MAX_FILTERS_PER_STAGE=5000
 # Write batch flush size in bytes per destination agent (empty = pando_pardb default of 262144, 0 = off)
 WRITE_BATCH_BYTES=
-# How each processing phase ends: until-done (default; sweep until nothing runs) or
-# once (one sweep per phase; only if no filter makes entries eligible for another
-# filter in the same phase)
-SWEEP=
+# How each processing phase ends: once (one sweep per phase) or until-done (sweep
+# until nothing runs; pando_pardb's own default). This experiment uses once: in the
+# k-mer overlap pipeline (filters/overlap_canonical.txt) no filter creates or tags
+# entries that another filter runs on in the same phase. Use until-done (or leave
+# it empty) for pipelines whose filters chain within a phase, e.g. the BTC filters.
+SWEEP=once
 # Keys the filter scan fetches from the map per request (empty = pando_pardb default of 4096)
 SCAN_BLOCK_KEYS=
 
