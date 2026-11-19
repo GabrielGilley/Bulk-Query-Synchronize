@@ -31,9 +31,10 @@ void set_handler() {
 int main_(int argc, char **argv) {
     cerr << "[Pando] [INFO] Loading..." << endl;
 
-    if (argc < 2 || argc > 9) {
+    if (argc < 2 || argc > 10) {
         cerr << "Usage: pando_pardb bind-addr [seed-addr] [-M<mem in GB>] [--skip-group-filters] [--max-filters-per-stage=N]\n"
             "                   [--write-batch-bytes=N] [--sweep=until-done|once] [--scan-block-keys=N]\n"
+            "                   [--intern-tags=on|off]\n"
             "\n"
             "Parameters:\n"
             "  bind-addr : the address to bind this specific DB agent to\n"
@@ -54,6 +55,10 @@ int main_(int argc, char **argv) {
             "                          same request.\n"
             "  --scan-block-keys=N : keys the filter scan fetches from the map per request\n"
             "                          (default 4096; each reply is also capped at ~16 MB)\n"
+            "  --intern-tags=on|off : store each distinct tag once per process and have entries\n"
+            "                          refer to it by id (default on). Turn off only if entries\n"
+            "                          get unique tags, which would make the tag table grow\n"
+            "                          with every entry.\n"
             "\n"
             "Addresses are of the form: IPv4-string,ID\n"
             "  IPv4-string : a period separated IP address, e.g., 1.2.3.4\n"
@@ -74,6 +79,8 @@ int main_(int argc, char **argv) {
     const string sweep_flag = "--sweep=";
     size_t scan_block_keys = 0;  // 0 = SeqDB default
     const string scan_block_flag = "--scan-block-keys=";
+    bool intern_tags = true;
+    const string intern_flag = "--intern-tags=";
     for (int idx = 2; idx < argc; ++idx) {
         if (argv[idx][0] == '-' && argv[idx][1] == 'M') {
             sz = (1ull<<30)*strtoul(&(argv[idx][2]), NULL, 10);
@@ -109,6 +116,14 @@ int main_(int argc, char **argv) {
                 return 1;
             }
             scan_block_keys = n;
+        } else if (std::string(argv[idx]).rfind(intern_flag, 0) == 0) {
+            string val = argv[idx] + intern_flag.size();
+            if (val == "on") intern_tags = true;
+            else if (val == "off") intern_tags = false;
+            else {
+                cerr << "[Pando] [ERROR] " << intern_flag << " must be on or off, got '" << val << "'" << endl;
+                return 1;
+            }
         } else if (std::string(argv[idx]).rfind(sweep_flag, 0) == 0) {
             string val = argv[idx] + sweep_flag.size();
             if (val == "once") single_sweep = true;
@@ -127,7 +142,10 @@ int main_(int argc, char **argv) {
          << " max_filters_per_stage=" << (max_filters_per_stage ? to_string(max_filters_per_stage) : string("default"))
          << " write_batch_bytes=" << (write_batch_bytes ? to_string(write_batch_bytes) : string("off"))
          << " sweep=" << (single_sweep ? "once" : "until-done")
-         << " scan_block_keys=" << (scan_block_keys ? to_string(scan_block_keys) : string("default")) << endl;
+         << " scan_block_keys=" << (scan_block_keys ? to_string(scan_block_keys) : string("default"))
+         << " intern_tags=" << (intern_tags ? "on" : "off") << endl;
+    // Process-wide, and must be set before any entry is created
+    TagTable::set_interning(intern_tags);
     ParDBOptions opts;
     opts.skip_group_filters = skip_group_filters;
     opts.max_filters_per_stage = max_filters_per_stage;

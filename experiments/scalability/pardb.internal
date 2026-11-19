@@ -9,6 +9,8 @@ WRITE_BATCH_BYTES="${2:-}"
 SWEEP="${3:-}"
 # Optional: keys the filter scan fetches per request (empty = pando_pardb default, 4096)
 SCAN_BLOCK_KEYS="${4:-}"
+# Optional: store each distinct tag once per process, on or off (empty = pando_pardb default, on)
+INTERN_TAGS="${5:-}"
 
 PARDB_EXTRA_ARGS=()
 if [[ -n "$MAX_FILTERS_PER_STAGE" && ! "$MAX_FILTERS_PER_STAGE" =~ ^[1-9][0-9]*$ ]]; then
@@ -38,6 +40,13 @@ if [[ -n "$SCAN_BLOCK_KEYS" && ! "$SCAN_BLOCK_KEYS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ -n "$SCAN_BLOCK_KEYS" ]]; then
     PARDB_EXTRA_ARGS+=("--scan-block-keys=$SCAN_BLOCK_KEYS")
+fi
+if [[ -n "$INTERN_TAGS" && "$INTERN_TAGS" != "on" && "$INTERN_TAGS" != "off" ]]; then
+    echo "pardb.internal: intern tags must be on or off, got '$INTERN_TAGS' (are the arguments shifted?)" >&2
+    exit 1
+fi
+if [[ -n "$INTERN_TAGS" ]]; then
+    PARDB_EXTRA_ARGS+=("--intern-tags=$INTERN_TAGS")
 fi
 
 echo ">>starting pardb"

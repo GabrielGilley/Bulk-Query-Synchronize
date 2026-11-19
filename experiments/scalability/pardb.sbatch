@@ -11,7 +11,7 @@
 #####################
 ## Cluster parameters
 
-### Script arguments (passed after the script name: sbatch ... pardb.sbatch [N] [BYTES] [SWEEP] [KEYS])
+### Script arguments (passed after the script name: sbatch ... pardb.sbatch [N] [BYTES] [SWEEP] [KEYS] [INTERN])
 # $1: max filter runs per processing pass (optional; empty = pando_pardb default)
 MAX_FILTERS_PER_STAGE="${1:-}"
 # $2: write batch flush size in bytes (optional; empty = pando_pardb default, 0 = off)
@@ -20,6 +20,8 @@ WRITE_BATCH_BYTES="${2:-}"
 SWEEP="${3:-}"
 # $4: keys the filter scan fetches per request (optional; empty = pando_pardb default, 4096)
 SCAN_BLOCK_KEYS="${4:-}"
+# $5: store each distinct tag once per process, on or off (optional; empty = pando_pardb default, on)
+INTERN_TAGS="${5:-}"
 
 ### Pando connection information
 echo "outputting"
@@ -60,7 +62,8 @@ echo "MAX_FILTERS_PER_STAGE=${MAX_FILTERS_PER_STAGE:-default}"
 echo "WRITE_BATCH_BYTES=${WRITE_BATCH_BYTES:-default}"
 echo "SWEEP=${SWEEP:-default}"
 echo "SCAN_BLOCK_KEYS=${SCAN_BLOCK_KEYS:-default}"
-srun --unbuffered bash pardb.internal "$PANDO_MESH_ENTRY" "$PANDO_PARDB_BIN" "$PANDO_BIND_IP_FILE" "$MAX_FILTERS_PER_STAGE" "$WRITE_BATCH_BYTES" "$SWEEP" "$SCAN_BLOCK_KEYS"
+echo "INTERN_TAGS=${INTERN_TAGS:-default}"
+srun --unbuffered bash pardb.internal "$PANDO_MESH_ENTRY" "$PANDO_PARDB_BIN" "$PANDO_BIND_IP_FILE" "$MAX_FILTERS_PER_STAGE" "$WRITE_BATCH_BYTES" "$SWEEP" "$SCAN_BLOCK_KEYS" "$INTERN_TAGS"
 
 echo FINISH
 date
