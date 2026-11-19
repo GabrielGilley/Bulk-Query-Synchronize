@@ -3,11 +3,75 @@ PANDO_PARDB_BIN="$1"; shift
 PANDO_BIND_IP_FILE="$1"; shift
 # Optional: filter runs per processing pass (empty = pando_pardb default)
 MAX_FILTERS_PER_STAGE="${1:-}"
+# Optional: write batch flush size in bytes (empty = pando_pardb default, 0 = off)
+WRITE_BATCH_BYTES="${2:-}"
+# Optional: continuous processing, on or off (empty = pando_pardb default, on)
+CONTINUOUS_PROCESSING="${3:-}"
+# Optional: keys the filter scan fetches per request (empty = pando_pardb default, 4096)
+SCAN_BLOCK_KEYS="${4:-}"
+# Optional: store each distinct tag once per process, on or off (empty = pando_pardb default, on)
+INTERN_TAGS="${5:-}"
+# Optional memory limits (empty = pando_pardb defaults; see pando_pardb's usage):
+# keep memory below this % of the node's or job's limit (default 90, 0 = off)
+MEM_LIMIT_PCT="${6:-}"
+# a fixed output budget per pass, in MiB (default none)
+MEM_PASS_BUDGET_MB="${7:-}"
+# share of the headroom the agents on a node may emit per pass (default 0.25)
+MEM_BUDGET_FRACTION="${8:-}"
+# agents sharing a node's memory (default: Slurm's tasks per node)
+AGENTS_PER_NODE="${9:-}"
 
 PARDB_EXTRA_ARGS=()
+if [[ -n "$MAX_FILTERS_PER_STAGE" && ! "$MAX_FILTERS_PER_STAGE" =~ ^[1-9][0-9]*$ ]]; then
+    echo "pardb.internal: max filters per stage must be a positive integer, got '$MAX_FILTERS_PER_STAGE' (are the arguments shifted?)" >&2
+    exit 1
+fi
 if [[ -n "$MAX_FILTERS_PER_STAGE" ]]; then
     PARDB_EXTRA_ARGS+=("--max-filters-per-stage=$MAX_FILTERS_PER_STAGE")
 fi
+if [[ -n "$WRITE_BATCH_BYTES" && ! "$WRITE_BATCH_BYTES" =~ ^[0-9]+$ ]]; then
+    echo "pardb.internal: write batch bytes must be a non-negative integer, got '$WRITE_BATCH_BYTES' (are the arguments shifted?)" >&2
+    exit 1
+fi
+if [[ -n "$WRITE_BATCH_BYTES" ]]; then
+    PARDB_EXTRA_ARGS+=("--write-batch-bytes=$WRITE_BATCH_BYTES")
+fi
+if [[ -n "$CONTINUOUS_PROCESSING" && "$CONTINUOUS_PROCESSING" != "on" && "$CONTINUOUS_PROCESSING" != "off" ]]; then
+    echo "pardb.internal: continuous processing must be on or off, got '$CONTINUOUS_PROCESSING' (are the arguments shifted?)" >&2
+    exit 1
+fi
+if [[ -n "$CONTINUOUS_PROCESSING" ]]; then
+    PARDB_EXTRA_ARGS+=("--continuous-processing=$CONTINUOUS_PROCESSING")
+fi
+if [[ -n "$SCAN_BLOCK_KEYS" && ! "$SCAN_BLOCK_KEYS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "pardb.internal: scan block keys must be a positive integer, got '$SCAN_BLOCK_KEYS' (are the arguments shifted?)" >&2
+    exit 1
+fi
+if [[ -n "$SCAN_BLOCK_KEYS" ]]; then
+    PARDB_EXTRA_ARGS+=("--scan-block-keys=$SCAN_BLOCK_KEYS")
+fi
+if [[ -n "$INTERN_TAGS" && "$INTERN_TAGS" != "on" && "$INTERN_TAGS" != "off" ]]; then
+    echo "pardb.internal: intern tags must be on or off, got '$INTERN_TAGS' (are the arguments shifted?)" >&2
+    exit 1
+fi
+if [[ -n "$INTERN_TAGS" ]]; then
+    PARDB_EXTRA_ARGS+=("--intern-tags=$INTERN_TAGS")
+fi
+# Formats only; pando_pardb checks the ranges
+NUMBER_RE='^([0-9]+(\.[0-9]*)?|\.[0-9]+)$'
+check_opt() {   # name value regex flag
+    if [[ -n "$2" && ! "$2" =~ $3 ]]; then
+        echo "pardb.internal: $1 has an unexpected value '$2' (are the arguments shifted?)" >&2
+        exit 1
+    fi
+    if [[ -n "$2" ]]; then
+        PARDB_EXTRA_ARGS+=("$4=$2")
+    fi
+}
+check_opt "memory limit percent" "$MEM_LIMIT_PCT" "$NUMBER_RE" --mem-limit-pct
+check_opt "memory pass budget (MiB)" "$MEM_PASS_BUDGET_MB" '^[1-9][0-9]*$' --mem-pass-budget-mb
+check_opt "memory budget fraction" "$MEM_BUDGET_FRACTION" "$NUMBER_RE" --mem-budget-fraction
+check_opt "agents per node" "$AGENTS_PER_NODE" '^[1-9][0-9]*$' --agents-per-node
 
 echo ">>starting pardb"
 PARDB_ID=$(($SLURM_LOCALID * 3))

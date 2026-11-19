@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include "util.hpp"
 #include "chatterbox.hpp"
 
@@ -183,17 +185,107 @@ class PandoMapClient : public ZMQRequester {
          */
         ZMQMessage retrieve_values_raw(size_t n, const dbkey_t* keys) {
             size_t msg_size = sizeof(msg_type_t) + sizeof(size_t) + n*sizeof(dbkey_t);
-            char* msg = new char[msg_size];
-            char* msg_ptr = msg;
+            // Freed even if the send throws. Not zero-filled (unlike
+            // vector<char>(n) or make_unique<char[]>(n)): every byte is
+            // written below before it is sent.
+            unique_ptr<char[]> msg(new char[msg_size]);
+            char* msg_ptr = msg.get();
 
             pack_msg(msg_ptr, MAP_RETRIEVE_VALUES);
             pack_single(msg_ptr, n);
             if (n) memcpy(msg_ptr, keys, n*sizeof(dbkey_t));
 
+            send(msg.get(), msg_size);
+
+            return read();
+        }
+
+        /** @brief Retrieve the keys and tags of the given entries, without values
+         *
+         * Returned entries have an empty value. Keys that do not exist are
+         * skipped, so the result may be shorter than the request.
+         *
+         * @param keys the keys to look up
+         * @param begin index of the first key to look up
+         * @param count number of keys (starting at begin) to look up
+         */
+        vector<DBEntry<>> retrieve_tags_by_keys(const vector<dbkey_t>& keys, size_t begin, size_t count) {
+            if (begin > keys.size()) begin = keys.size();
+            if (count > keys.size() - begin) count = keys.size() - begin;
+
+            size_t msg_size = sizeof(msg_type_t) + sizeof(size_t) + count*sizeof(dbkey_t);
+            char* msg = new char[msg_size];
+            char* msg_ptr = msg;
+
+            pack_msg(msg_ptr, MAP_GET_TAGS_BY_KEYS);
+            pack_single(msg_ptr, count);
+            for (size_t i = begin; i < begin + count; ++i)
+                pack_single(msg_ptr, keys[i]);
+
             send(msg, msg_size);
             delete [] msg;
 
-            return read();
+            ZMQMessage resp = read();
+            const char* resp_data = resp.data();
+
+            size_t recvd_msg_size;
+            unpack_single(resp_data, recvd_msg_size);
+
+            const char *resp_end = resp_data + recvd_msg_size - sizeof(size_t);
+
+            vector<DBEntry<>> entries;
+            entries.reserve(count);
+            while (resp_data < resp_end) {
+                DBEntry e {resp_data};
+                entries.push_back(move(e));
+            }
+
+            return entries;
+        }
+
+        /** @brief Retrieve whole entries (keys, tags and values) for a run of keys
+         *
+         * Looks up keys[begin, begin + count) in order with one request. The
+         * reply stops early once it reaches about max_bytes, so it may cover
+         * fewer keys than asked for (but always at least one).
+         *
+         * @param keys_covered set to how many keys, starting at begin, the
+         *        result accounts for
+         * @return the entries that exist among those keys, in key order
+         *         (keys that do not exist are skipped)
+         */
+        vector<DBEntry<>> retrieve_entries_by_keys(const vector<dbkey_t>& keys, size_t begin, size_t count,
+                                                   size_t max_bytes, size_t& keys_covered) {
+            if (begin > keys.size()) begin = keys.size();
+            if (count > keys.size() - begin) count = keys.size() - begin;
+            keys_covered = 0;
+            vector<DBEntry<>> entries;
+            if (count == 0) return entries;
+
+            size_t msg_size = sizeof(msg_type_t) + 2*sizeof(size_t) + count*sizeof(dbkey_t);
+            unique_ptr<char[]> msg(new char[msg_size]);
+            char* msg_ptr = msg.get();
+            pack_msg(msg_ptr, MAP_GET_ENTRIES_BY_KEYS);
+            pack_single(msg_ptr, count);
+            pack_single(msg_ptr, max_bytes);
+            for (size_t i = begin; i < begin + count; ++i)
+                pack_single(msg_ptr, keys[i]);
+            send(msg.get(), msg_size);
+
+            ZMQMessage resp = read();
+            const char* resp_data = resp.data();
+            const char* resp_end = resp_data + resp.size();
+            if (resp.size() < sizeof(size_t)) throw runtime_error("entries by keys: reply too short");
+            unpack_single(resp_data, keys_covered);
+            if (keys_covered == 0 || keys_covered > count) throw runtime_error("entries by keys: bad reply");
+
+            entries.reserve(keys_covered);
+            while (resp_data < resp_end) {
+                DBEntry e {resp_data};
+                entries.push_back(move(e));
+            }
+            if (resp_data != resp_end) throw runtime_error("entries by keys: malformed reply");
+            return entries;
         }
 
         bool key_exist(dbkey_t key) {

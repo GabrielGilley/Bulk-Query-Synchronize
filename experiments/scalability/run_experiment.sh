@@ -16,8 +16,34 @@ DATA_DIR="/cscratch/pando-chr13-R1"
 RESULTS_DIR="/cscratch/results/"
 NODE_COUNT=8
 # Filter runs per processing pass before the stage closes (bounds memory).
-# Empty = pando_pardb default (100000).
+# Empty = pando_pardb default (unlimited; its memory limits bound memory instead).
 MAX_FILTERS_PER_STAGE=5000
+# Write batch flush size in bytes per destination agent (empty = pando_pardb default of 262144, 0 = off)
+WRITE_BATCH_BYTES=
+# Continuous processing: on (pando_pardb's own default) keeps sweeping over the
+# entries in each phase until nothing more runs; off processes each entry once per
+# phase. This experiment uses off: in the k-mer overlap pipeline
+# (filters/overlap_canonical.txt) no filter creates or tags entries that another
+# filter runs on in the same phase. Use on (or leave it empty) for pipelines whose
+# filters chain within a phase, e.g. the BTC filters.
+CONTINUOUS_PROCESSING=off
+# Keys the filter scan fetches from the map per request (empty = pando_pardb default of 4096)
+SCAN_BLOCK_KEYS=
+# Store each distinct tag once per agent instead of in every entry: on or off
+# (empty = pando_pardb default, on)
+INTERN_TAGS=
+# Memory limits: a processing pass ends early (and asks every agent to) before
+# memory runs out. Empty = pando_pardb defaults.
+#   MEM_LIMIT_PCT: keep memory below this % of the node's memory, or of this job's
+#                  --mem if lower (default 90; 0 turns the limit off)
+#   MEM_PASS_BUDGET_MB: also emit at most this many MiB of output per pass (default none)
+#   MEM_BUDGET_FRACTION: share of the free memory the agents on a node may emit per
+#                        pass, together (default 0.25)
+#   AGENTS_PER_NODE: agents sharing a node's memory (default: Slurm's tasks per node)
+MEM_LIMIT_PCT=
+MEM_PASS_BUDGET_MB=
+MEM_BUDGET_FRACTION=
+AGENTS_PER_NODE=
 
 mkdir -p "$RESULTS_DIR"
 touch "$RESULTS_DIR/$TEST_NAME.csv"
@@ -45,7 +71,8 @@ fi
 
 
 # Submit batch job
-SLURM_OUTPUT=$(sbatch -N "$NODE_COUNT" --mem 360000 pardb.sbatch "$MAX_FILTERS_PER_STAGE")
+SLURM_OUTPUT=$(sbatch -N "$NODE_COUNT" --mem 390000 pardb.sbatch "$MAX_FILTERS_PER_STAGE" "$WRITE_BATCH_BYTES" "$CONTINUOUS_PROCESSING" "$SCAN_BLOCK_KEYS" "$INTERN_TAGS" \
+    "$MEM_LIMIT_PCT" "$MEM_PASS_BUDGET_MB" "$MEM_BUDGET_FRACTION" "$AGENTS_PER_NODE")
 JOB_ID=$(echo "$SLURM_OUTPUT" | awk '{print $4}')
 echo "Batch job submitted with $NODE_COUNT nodes. Job ID: $JOB_ID"
 
@@ -67,7 +94,7 @@ export PANDO_PHASE_FILE="$MEMMON_DIR/phases.log"
 echo "Memory monitor: $MEMMON_DIR (analyze: python3 memmon/analyze_memmon.py $MEMMON_DIR)"
 
 echo "Beginning Experiment..."
-echo "Params: $TEST_NAME $MESH $FILTERS $DATA_DIR $RESULTS_DIR max_filters_per_stage=${MAX_FILTERS_PER_STAGE:-default}"
+echo "Params: $TEST_NAME $MESH $FILTERS $DATA_DIR $RESULTS_DIR max_filters_per_stage=${MAX_FILTERS_PER_STAGE:-default} write_batch_bytes=${WRITE_BATCH_BYTES:-default} continuous_processing=${CONTINUOUS_PROCESSING:-default} scan_block_keys=${SCAN_BLOCK_KEYS:-default} intern_tags=${INTERN_TAGS:-default} mem_limit_pct=${MEM_LIMIT_PCT:-default} mem_pass_budget_mb=${MEM_PASS_BUDGET_MB:-default} mem_budget_fraction=${MEM_BUDGET_FRACTION:-default} agents_per_node=${AGENTS_PER_NODE:-default}"
 # singularity run -B /cscratch -B /scratch ./../../src/sifs/pando_python.sif python3 dagify-script.py -n $TEST_NAME -m $MESH -f $FILTERS -d $DATA_DIR -r $RESULTS_DIR
 singularity run -B /cscratch -B /scratch ./../../src/sifs/pando_python.sif python3 par-script.py -n $TEST_NAME -m $MESH -f $FILTERS -d $DATA_DIR -r $RESULTS_DIR
 

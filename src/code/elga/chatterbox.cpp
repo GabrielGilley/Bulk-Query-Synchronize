@@ -10,6 +10,7 @@
  * Please see the LICENSE.md file for license information.
  */
 
+#include <cerrno>
 #include <iostream>
 
 #include <chrono>
@@ -94,13 +95,15 @@ void disconnect_(zmq_socket_t socket, const ZMQAddress remote_addr, const ZMQAdd
 }
 
 ZMQChatterbox::ZMQChatterbox(const ZMQAddress &addr) :
-        sock_rep_(NULL), sock_pub_(NULL), sock_sub_(NULL), sock_pull_(NULL), last_heartbeat_(), addr_(addr) {
+        sock_rep_(NULL), sock_pub_(NULL), sock_sub_(NULL), sock_pull_(NULL), sock_ctrl_sub_(NULL), last_heartbeat_(), addr_(addr) {
 
     // Create our sockets
     sock_rep_ = socket_(ZMQ_REP);
     sock_pub_ = socket_(ZMQ_PUB);
     sock_sub_ = socket_(ZMQ_SUB);
     sock_pull_ = socket_(ZMQ_PULL);
+    // Has no subscriptions until ctrl_sub(), so it receives nothing by default
+    sock_ctrl_sub_ = socket_(ZMQ_SUB);
 
     // Open and connect all of our sockets
     if (!addr_.is_zero()) {
@@ -121,6 +124,7 @@ ZMQChatterbox::~ZMQChatterbox() {
     if (sock_pub_) zmq_close(sock_pub_);
     if (sock_sub_) zmq_close(sock_sub_);
     if (sock_pull_) zmq_close(sock_pull_);
+    if (sock_ctrl_sub_) zmq_close(sock_ctrl_sub_);
 }
 
 std::vector<zmq_socket_t> ZMQChatterbox::poll(long timeout) {
@@ -191,6 +195,7 @@ void ZMQChatterbox::sub_connect(const ZMQAddress &addr) {
     #endif
 
     connect_(sock_sub_, addr, addr_, PUBLISH);
+    connect_(sock_ctrl_sub_, addr, addr_, PUBLISH);
 }
 
 void ZMQChatterbox::sub_disconnect(const ZMQAddress &addr) {
@@ -199,6 +204,7 @@ void ZMQChatterbox::sub_disconnect(const ZMQAddress &addr) {
     #endif
 
     disconnect_(sock_sub_, addr, addr_, PUBLISH);
+    disconnect_(sock_ctrl_sub_, addr, addr_, PUBLISH);
 }
 
 void ZMQChatterbox::sub(msg_type_t type) {
@@ -221,6 +227,36 @@ void ZMQChatterbox::unsub(const char *data, size_t size) {
 
     if (zmq_setsockopt(sock_sub_, ZMQ_UNSUBSCRIBE, data, size) != 0)
         throw std::runtime_error("Unable to unsubscribe");
+}
+
+void ZMQChatterbox::ctrl_sub(msg_type_t type) {
+    if (zmq_setsockopt(sock_ctrl_sub_, ZMQ_SUBSCRIBE, &type, sizeof(type)) != 0)
+        throw std::runtime_error("Unable to subscribe control socket");
+}
+
+size_t ZMQChatterbox::drain_ctrl(const std::function<void(const char*, const char*)>& fn) {
+    size_t n = 0;
+    while (true) {
+        zmq_msg_t msg;
+        if (zmq_msg_init(&msg) != 0) throw std::runtime_error("Unable to init msg");
+        int size = zmq_msg_recv(&msg, sock_ctrl_sub_, ZMQ_DONTWAIT);
+        if (size < 0) {
+            int err = errno;
+            zmq_msg_close(&msg);
+            // Nothing (more) waiting, or interrupted: try again next time
+            if (err == EAGAIN || err == EINTR) return n;
+            throw std::runtime_error("Unable to read control message");
+        }
+        const char* data = (const char*)zmq_msg_data(&msg);
+        try {
+            fn(data, data + size);
+        } catch (...) {
+            zmq_msg_close(&msg);
+            throw;
+        }
+        zmq_msg_close(&msg);
+        ++n;
+    }
 }
 
 void ZMQChatterbox::ack(zmq_socket_t sock) {
@@ -321,12 +357,20 @@ ZMQMessage::~ZMQMessage() {
  * would point into the moved-from message. */
 void ZMQMessage::take_(ZMQMessage& that) {
     sock_ = that.sock_;
-    size_ = that.size_;
-    closed_ = that.closed_;
+    size_ = 0;
     data_ = nullptr;
-    if (!closed_) {
+    // Stay closed until the message has really been taken over, so that if
+    // zmq_msg_init or zmq_msg_move fails the destructor does not close an
+    // invalid message
+    closed_ = true;
+    if (!that.closed_) {
         if (zmq_msg_init(&msg_part_) != 0) throw std::runtime_error("Unable to init msg");
-        if (zmq_msg_move(&msg_part_, &that.msg_part_) != 0) throw std::runtime_error("Unable to move msg");
+        if (zmq_msg_move(&msg_part_, &that.msg_part_) != 0) {
+            zmq_msg_close(&msg_part_);
+            throw std::runtime_error("Unable to move msg");
+        }
+        closed_ = false;
+        size_ = that.size_;
         data_ = (char*)zmq_msg_data(&msg_part_);
     }
     // The moved-from message no longer owns anything
@@ -343,6 +387,7 @@ ZMQMessage& ZMQMessage::operator=(ZMQMessage&& that) {
     if (this != &that) {
         // Release the message this one held before taking over the other
         if (!closed_) zmq_msg_close(&msg_part_);
+        closed_ = true;
         take_(that);
     }
     return *this;
@@ -357,7 +402,11 @@ void ZMQMessage::send(zmq_socket_t sock) {
     // zmq_msg_send returns the size clamped to INT_MAX, or -1 on error
     int ret = zmq_msg_send(&msg_part_, sock, 0);
     if (ret < 0) throw std::runtime_error("Error while sending");
-    // On success ZeroMQ owns the buffer and msg_part_ is now empty
+    // On success ZeroMQ owns the buffer and msg_part_ is now empty. Close the
+    // empty message and mark this one closed, so sending it again throws
+    // rather than sending an empty message.
+    zmq_msg_close(&msg_part_);
+    closed_ = true;
     data_ = nullptr;
     size_ = 0;
 }

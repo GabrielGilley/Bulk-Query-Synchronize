@@ -11,9 +11,24 @@
 #####################
 ## Cluster parameters
 
-### Script arguments (passed after the script name: sbatch ... pardb.sbatch [N])
+### Script arguments (passed after the script name: sbatch ... pardb.sbatch [N] [BYTES] [CONTINUOUS] [KEYS] [INTERN] [PCT] [MB] [FRACTION] [AGENTS])
 # $1: max filter runs per processing pass (optional; empty = pando_pardb default)
 MAX_FILTERS_PER_STAGE="${1:-}"
+# $2: write batch flush size in bytes (optional; empty = pando_pardb default, 0 = off)
+WRITE_BATCH_BYTES="${2:-}"
+# $3: continuous processing, on or off (optional; empty = pando_pardb default, on)
+CONTINUOUS_PROCESSING="${3:-}"
+# $4: keys the filter scan fetches per request (optional; empty = pando_pardb default, 4096)
+SCAN_BLOCK_KEYS="${4:-}"
+# $5: store each distinct tag once per process, on or off (optional; empty = pando_pardb default, on)
+INTERN_TAGS="${5:-}"
+# $6-$9: memory limits (optional; empty = pando_pardb defaults): percent of the
+# node's or job's memory to stay below, fixed output budget per pass in MiB,
+# share of the headroom per pass, agents sharing a node's memory
+MEM_LIMIT_PCT="${6:-}"
+MEM_PASS_BUDGET_MB="${7:-}"
+MEM_BUDGET_FRACTION="${8:-}"
+AGENTS_PER_NODE="${9:-}"
 
 ### Pando connection information
 echo "outputting"
@@ -22,9 +37,10 @@ node=$(echo $SLURM_JOB_NODELIST | cut -d '-' -f1 - | cut -d ',' -f1 - | tr -d '[
 ip=$(host "$node.100g" | awk '{print $4}')
 PANDO_MESH_ENTRY="$ip,0"
 
-SCRIPT_PATH=$(scontrol show job $SLURM_JOBID | awk -F= '/Command=/{print $2}')
-SCRIPT_DIR=$(dirname $SCRIPT_PATH)
-PANDO_PARDB_BIN=$SCRIPT_DIR/../../src/sifs/pando_pardb.sif
+# Command= also lists the script's arguments; keep only the script path
+SCRIPT_PATH=$(scontrol show job "$SLURM_JOBID" | awk -F= '/Command=/{print $2}' | awk '{print $1}')
+SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
+PANDO_PARDB_BIN="$SCRIPT_DIR/../../src/sifs/pando_pardb.sif"
 
 PANDO_BIND_IP_FILE=/opt/installer/ip
 echo REMOVING FILES
@@ -50,7 +66,13 @@ echo $PANDO_MESH_ENTRY
 echo $PANDO_PARDB_BIN
 echo $PANDO_BIND_IP_FILE
 echo "MAX_FILTERS_PER_STAGE=${MAX_FILTERS_PER_STAGE:-default}"
-srun --unbuffered bash pardb.internal $PANDO_MESH_ENTRY $PANDO_PARDB_BIN $PANDO_BIND_IP_FILE "$MAX_FILTERS_PER_STAGE"
+echo "WRITE_BATCH_BYTES=${WRITE_BATCH_BYTES:-default}"
+echo "CONTINUOUS_PROCESSING=${CONTINUOUS_PROCESSING:-default}"
+echo "SCAN_BLOCK_KEYS=${SCAN_BLOCK_KEYS:-default}"
+echo "INTERN_TAGS=${INTERN_TAGS:-default}"
+echo "MEM_LIMIT_PCT=${MEM_LIMIT_PCT:-default} MEM_PASS_BUDGET_MB=${MEM_PASS_BUDGET_MB:-default} MEM_BUDGET_FRACTION=${MEM_BUDGET_FRACTION:-default} AGENTS_PER_NODE=${AGENTS_PER_NODE:-default}"
+srun --unbuffered bash pardb.internal "$PANDO_MESH_ENTRY" "$PANDO_PARDB_BIN" "$PANDO_BIND_IP_FILE" "$MAX_FILTERS_PER_STAGE" "$WRITE_BATCH_BYTES" "$CONTINUOUS_PROCESSING" "$SCAN_BLOCK_KEYS" "$INTERN_TAGS" \
+    "$MEM_LIMIT_PCT" "$MEM_PASS_BUDGET_MB" "$MEM_BUDGET_FRACTION" "$AGENTS_PER_NODE"
 
 echo FINISH
 date
