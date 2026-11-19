@@ -11,7 +11,7 @@
 #####################
 ## Cluster parameters
 
-### Script arguments (passed after the script name: sbatch ... pardb.sbatch [N] [BYTES] [SWEEP] [KEYS] [INTERN])
+### Script arguments (passed after the script name: sbatch ... pardb.sbatch [N] [BYTES] [SWEEP] [KEYS] [INTERN] [PCT] [MB] [FRACTION] [AGENTS])
 # $1: max filter runs per processing pass (optional; empty = pando_pardb default)
 MAX_FILTERS_PER_STAGE="${1:-}"
 # $2: write batch flush size in bytes (optional; empty = pando_pardb default, 0 = off)
@@ -22,6 +22,13 @@ SWEEP="${3:-}"
 SCAN_BLOCK_KEYS="${4:-}"
 # $5: store each distinct tag once per process, on or off (optional; empty = pando_pardb default, on)
 INTERN_TAGS="${5:-}"
+# $6-$9: memory limits (optional; empty = pando_pardb defaults): percent of the
+# node's or job's memory to stay below, fixed output budget per pass in MiB,
+# share of the headroom per pass, agents sharing a node's memory
+MEM_LIMIT_PCT="${6:-}"
+MEM_PASS_BUDGET_MB="${7:-}"
+MEM_BUDGET_FRACTION="${8:-}"
+AGENTS_PER_NODE="${9:-}"
 
 ### Pando connection information
 echo "outputting"
@@ -63,7 +70,9 @@ echo "WRITE_BATCH_BYTES=${WRITE_BATCH_BYTES:-default}"
 echo "SWEEP=${SWEEP:-default}"
 echo "SCAN_BLOCK_KEYS=${SCAN_BLOCK_KEYS:-default}"
 echo "INTERN_TAGS=${INTERN_TAGS:-default}"
-srun --unbuffered bash pardb.internal "$PANDO_MESH_ENTRY" "$PANDO_PARDB_BIN" "$PANDO_BIND_IP_FILE" "$MAX_FILTERS_PER_STAGE" "$WRITE_BATCH_BYTES" "$SWEEP" "$SCAN_BLOCK_KEYS" "$INTERN_TAGS"
+echo "MEM_LIMIT_PCT=${MEM_LIMIT_PCT:-default} MEM_PASS_BUDGET_MB=${MEM_PASS_BUDGET_MB:-default} MEM_BUDGET_FRACTION=${MEM_BUDGET_FRACTION:-default} AGENTS_PER_NODE=${AGENTS_PER_NODE:-default}"
+srun --unbuffered bash pardb.internal "$PANDO_MESH_ENTRY" "$PANDO_PARDB_BIN" "$PANDO_BIND_IP_FILE" "$MAX_FILTERS_PER_STAGE" "$WRITE_BATCH_BYTES" "$SWEEP" "$SCAN_BLOCK_KEYS" "$INTERN_TAGS" \
+    "$MEM_LIMIT_PCT" "$MEM_PASS_BUDGET_MB" "$MEM_BUDGET_FRACTION" "$AGENTS_PER_NODE"
 
 echo FINISH
 date
